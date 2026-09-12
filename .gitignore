@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+.env.*
+!.env.example
+archive-config.json
+.ai-native-brand/
+sessions/
+archived_sessions/
+*.jsonl
+HANDOFF.md
+Agent_Session_Archive_Foundation_v0.1.md
+Agent_Session_Archive_Skill_Proposal_v0.1.md

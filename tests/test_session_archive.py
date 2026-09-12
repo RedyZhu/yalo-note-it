@@ -1,0 +1,259 @@
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/yalo-note-it/scripts'
+sys.path.insert(0, str(SCRIPTS))
+import archive_session as archive
+from codex_format import ArchiveError, is_trigger, keep_record
+from session_assets import plan_assets
+
+SID = '11111111-1111-4111-8111-111111111111'
+STAMP = '2026-09-10T10:00:00.123Z'
+
+
+def record(kind, payload):
+    return {'timestamp': STAMP, 'type': kind, 'payload': payload}
+
+
+def message(text, identifier='request', role='user', kinds=None, phase=None):
+    payload = {'type': 'message', 'id': identifier, 'role': role,
+               'content': [{'type': 'input_text' if role == 'user' else 'output_text', 'text': text}]}
+    if role == 'user':
+        payload['internal_chat_message_metadata_passthrough'] = {
+            'content_item_kinds': ['user.text'] if kinds is None else kinds}
+    if phase:
+        payload['phase'] = phase
+    return record('response_item', payload)
+
+
+def raw(row):
+    return (json.dumps(row, ensure_ascii=False, separators=(', ', ': ')) + '\r\n').encode('utf-8')
+
+
+def sample():
+    return [record('session_meta', {'session_id': SID, 'id': SID, 'base_instructions': {'text': 'private'}}),
+            message('injected', 'context', kinds=['agents_md.instructions']),
+            message('hello', 'first'),
+            message('working', 'comment', 'assistant', phase='commentary'),
+            record('response_item', {'type': 'reasoning', 'encrypted_content': 'not-archived'}),
+            record('response_item', {'type': 'custom_tool_call', 'id': 'tool', 'call_id': 'call',
+                                      'name': 'example', 'input': 'x', 'status': 'completed'}),
+            record('response_item', {'type': 'custom_tool_call_output', 'id': 'result', 'call_id': 'call',
+                                      'output': [{'type': 'input_text', 'text': 'truncated result'}]}),
+            record('event_msg', {'type': 'token_count'}),
+            message('done', 'answer', 'assistant', phase='final_answer'),
+            message('亚楼记一下'),
+            message('archive execution', 'after', 'assistant', phase='commentary')]
+
+
+class ArchiveTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.home = self.root / 'codex'
+        self.source = self.home / 'sessions' / ('rollout-' + SID + '.jsonl')
+        self.source.parent.mkdir(parents=True)
+        self.rows = sample()
+        self.source.write_bytes(b''.join(map(raw, self.rows)))
+        self.cutoff_hash = hashlib.sha256(raw(self.rows[-2])).hexdigest()
+        self.destination = self.root / 'archive'
+        self.destination.mkdir()
+
+    def prepare(self):
+        return archive.prepare(self.source, 'request', self.cutoff_hash)
+
+    def test_trigger_variants_and_negative_contexts(self):
+        for text in ['亚楼记一下', ' 亚楼，你记一下。\n', '亚楼，记一下', '亚楼 记一下!', '亚楼你记一下',
+                     '刘亚楼，你记一下', '刘亚楼你记一下', '请亚楼把结论记一下谢谢',
+                     '亚楼\n请记一下', '亚楼记一下？', '“亚楼记一下”', '不要亚楼记一下',
+                     '解释亚楼记一下', '```\n亚楼记一下\n```']:
+            with self.subTest(text=text):
+                self.assertTrue(is_trigger(text))
+        for text in ['记一下亚楼', '亚楼', '记一下', '这个议题到此为止', '这个问题到此为止', '$yalo-note-it']:
+            with self.subTest(text=text):
+                self.assertFalse(is_trigger(text))
+
+    def test_identity_is_not_recency(self):
+        other = self.source.parent / 'newer-unrelated.jsonl'
+        other.write_bytes(b'{}\n')
+        self.assertEqual(archive.locate_source(SID, self.home), self.source)
+
+    def test_identity_mismatch_and_ambiguity_fail(self):
+        self.rows[0]['payload']['session_id'] = 'wrong'
+        self.source.write_bytes(b''.join(map(raw, self.rows)))
+        with self.assertRaises(ArchiveError):
+            archive.locate_source(SID, self.home)
+        self.source.with_name('duplicate-' + SID + '.jsonl').write_bytes(self.source.read_bytes())
+        with self.assertRaises(ArchiveError):
+            archive.locate_source(SID, self.home)
+
+    def test_missing_or_conflicting_environment_fails(self):
+        for env in [{}, {'CODEX_SESSION_ID': SID, 'CODEX_THREAD_ID': 'different'}]:
+            with patch.dict(os.environ, env, clear=True), self.assertRaises(ArchiveError):
+                archive.current_id()
+        with patch.dict(os.environ, {'CODEX_SESSION_ID': SID}, clear=True):
+            self.assertEqual(archive.current_id(), SID)
+
+    def test_exact_bytes_order_and_cutoff(self):
+        selected, _ = self.prepare()
+        self.assertEqual(b''.join(r for r, _ in selected), b''.join(raw(self.rows[i]) for i in [2, 3, 5, 6, 8, 9]))
+
+    def test_probe_reads_committed_request(self):
+        result = archive.probe(self.source)
+        self.assertEqual(result['message_id'], 'request')
+        self.assertTrue(result['is_trigger'])
+        self.assertEqual(result['sha256'], self.cutoff_hash)
+
+    def test_partial_cutoff_fails_but_partial_later_write_is_irrelevant(self):
+        self.source.write_bytes(b''.join(map(raw, self.rows[:-2])) + raw(self.rows[-2])[:-1])
+        with self.assertRaises(ArchiveError):
+            self.prepare()
+        self.source.write_bytes(b''.join(map(raw, self.rows[:-1])) + b'{unfinished')
+        self.prepare()
+
+    def test_unknown_event_and_item_fail(self):
+        for row in [record('new_top', {}), record('event_msg', {'type': 'new_event'}),
+                    record('response_item', {'type': 'new_call'})]:
+            with self.subTest(row=row), self.assertRaises(ArchiveError):
+                keep_record(row)
+
+    def test_unknown_mixed_user_and_unknown_phase_fail(self):
+        for row in [message('x', kinds=['unknown']),
+                    message('x', kinds=['user.text', 'agents_md.instructions']),
+                    message('x', role='assistant')]:
+            with self.subTest(row=row), self.assertRaises(ArchiveError):
+                keep_record(row)
+
+    def test_analysis_and_metadata_excluded(self):
+        self.assertFalse(keep_record(self.rows[0]))
+        self.assertFalse(keep_record(message('hidden', role='assistant', phase='analysis')))
+
+    def test_function_calls_and_outputs_preserved(self):
+        call = record('response_item', {'type': 'function_call', 'id': 'f', 'call_id': 'fc',
+                                       'name': 'request_user_input', 'arguments': '{}'})
+        output = record('response_item', {'type': 'function_call_output', 'id': 'fo',
+                                         'call_id': 'fc', 'output': '{"accepted":true}'})
+        self.assertTrue(keep_record(call))
+        self.assertTrue(keep_record(output))
+        output['payload']['output'] = None
+        with self.assertRaises(ArchiveError):
+            keep_record(output)
+
+    def test_hash_mismatch_or_absent_cutoff_fails(self):
+        for identifier, hash_value in [('request', 'bad'), ('absent', self.cutoff_hash)]:
+            with self.assertRaises(ArchiveError):
+                archive.prepare(self.source, identifier, hash_value)
+
+    def test_confirmation_requires_explicit_mode(self):
+        row = message('是的，归档吧', 'confirmed')
+        self.source.write_bytes(b''.join(map(raw, self.rows[:9] + [row])))
+        h = archive.digest(raw(row))
+        with self.assertRaises(ArchiveError):
+            archive.prepare(self.source, 'confirmed', h)
+        selected, _ = archive.prepare(self.source, 'confirmed', h, confirmed=True)
+        self.assertEqual(selected[-1][1]['payload']['id'], 'confirmed')
+
+    def test_configuration_reply_does_not_move_cutoff(self):
+        self.source.write_bytes(self.source.read_bytes() + raw(message('使用默认路径', 'path-reply')))
+        selected, _ = self.prepare()
+        self.assertEqual(selected[-1][1]['payload']['id'], 'request')
+
+    def test_repeat_archive_is_one_file_and_source_unchanged(self):
+        before = self.source.read_bytes()
+        selected, started = self.prepare()
+        output = archive.commit_archive(self.destination, SID, started, selected, [])
+        archive.commit_archive(self.destination, SID, started, selected, [])
+        self.assertEqual(output, self.destination / 'sessions' / 'codex' / '2026-09' / SID / 'session.jsonl')
+        self.assertEqual(output.read_bytes(), b''.join(r for r, _ in selected))
+        self.assertEqual(list(output.parent.iterdir()), [output])
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_replace_failure_preserves_previous_archive(self):
+        selected, started = self.prepare()
+        output = archive.commit_archive(self.destination, SID, started, selected, [])
+        previous = output.read_bytes()
+        with patch.object(archive.os, 'replace', side_effect=OSError('denied')):
+            with self.assertRaises(OSError):
+                archive.commit_archive(self.destination, SID, started, selected[:1], [])
+        self.assertEqual(output.read_bytes(), previous)
+        self.assertEqual(list(output.parent.iterdir()), [output])
+
+    def test_lock_refuses_concurrent_write(self):
+        selected, started = self.prepare()
+        output = archive.commit_archive(self.destination, SID, started, selected, [])
+        (output.parent / '.archive.lock').write_text('')
+        with self.assertRaises(ArchiveError):
+            archive.commit_archive(self.destination, SID, started, selected, [])
+
+    def test_status_does_not_create_config(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        with patch.object(archive, 'config_path', return_value=config):
+            self.assertIsNone(archive.load_config())
+        self.assertFalse(config.parent.exists())
+
+    def test_configuration_is_independent_and_invalid_path_has_no_fallback(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        with patch.object(archive, 'config_path', return_value=config):
+            archive.configure(self.destination)
+            self.assertEqual(archive.load_config(), self.destination)
+            config.write_text(json.dumps({'archive_root': str(self.root / 'absent')}))
+            with self.assertRaises(ArchiveError):
+                archive.load_config()
+
+    def test_temporary_attachment_and_name_collision(self):
+        paths = [self.root / 'one' / 'picture.png', self.root / 'two' / 'picture.png']
+        rows = []
+        for i, p in enumerate(paths):
+            p.parent.mkdir()
+            p.write_bytes(bytes([i]))
+            row = message(f'![image](<{p}>)', f'asset-{i}')
+            rows.append((raw(row), row))
+        assets = plan_assets(rows, self.home)
+        output = archive.commit_archive(self.destination, SID, STAMP, rows, assets)
+        self.assertEqual((output.parent / 'assets/picture.png').read_bytes(), b'\x00')
+        self.assertEqual((output.parent / 'assets/picture-asset-1.png').read_bytes(), b'\x01')
+        self.assertEqual(output.read_bytes(), b''.join(r for r, _ in rows))
+
+    def test_embedded_image_and_ordinary_file_need_no_copy(self):
+        row = message('text')
+        row['payload']['content'].append({'type': 'input_image', 'image_url': 'data:image/png;base64,AA=='})
+        self.assertEqual(plan_assets([(raw(row), row)], self.home), [])
+        row = message('![ordinary](/ordinary/project/image.png)')
+        with patch('session_assets.temporary_roots', return_value={self.root / 'temporary'}):
+            self.assertEqual(plan_assets([(raw(row), row)], self.home), [])
+
+    def test_missing_temporary_and_remote_image_fail(self):
+        row = message(f'![image]({self.root / "missing.png"})')
+        with self.assertRaises(ArchiveError):
+            plan_assets([(raw(row), row)], self.home)
+
+    def test_diagnostic_paths_are_not_attachments(self):
+        row = message(f'AssertionError: WindowsPath(\'{self.root / "deleted" / "source.jsonl"}\') != expected')
+        self.assertEqual(plan_assets([(raw(row), row)], self.home), [])
+        row['payload']['content'] = [{'type': 'input_image', 'image_url': 'https://example.com/temporary.png'}]
+        with self.assertRaises(ArchiveError):
+            plan_assets([(raw(row), row)], self.home)
+
+    def test_asset_changed_after_planning_preserves_archive(self):
+        selected, started = self.prepare()
+        output = archive.commit_archive(self.destination, SID, started, selected, [])
+        before = output.read_bytes()
+        p = self.root / 'file.png'
+        p.write_bytes(b'one')
+        row = message(f'![image]({p})')
+        assets = plan_assets([(raw(row), row)], self.home)
+        p.write_bytes(b'two')
+        with self.assertRaises(ArchiveError):
+            archive.commit_archive(self.destination, SID, started, selected, assets)
+        self.assertEqual(output.read_bytes(), before)
+
+
+if __name__ == '__main__':
+    unittest.main()

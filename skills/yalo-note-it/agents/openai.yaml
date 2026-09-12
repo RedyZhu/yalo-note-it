@@ -1,0 +1,5 @@
+interface:
+  display_name: "Yalo Note It"
+  short_description: "说“亚楼记一下”，原样保存当前会话和工具轨迹到本地目录"
+policy:
+  allow_implicit_invocation: true
