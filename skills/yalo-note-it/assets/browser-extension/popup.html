@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ChatGPT Conversation Capture</title>
+    <style>
+      body {
+        box-sizing: border-box;
+        width: 260px;
+        margin: 0;
+        padding: 14px;
+        color: #172033;
+        font: 14px/1.45 system-ui, sans-serif;
+        background: #fff;
+      }
+      h1 { margin: 0 0 12px; font-size: 15px; }
+      button {
+        width: 100%;
+        margin: 0 0 8px;
+        padding: 9px 12px;
+        border: 1px solid #c8d0dc;
+        border-radius: 8px;
+        color: #172033;
+        background: #fff;
+        cursor: pointer;
+      }
+      button.primary { color: #fff; border-color: #2563eb; background: #2563eb; }
+      button.danger { color: #b42318; }
+      #status { min-height: 20px; color: #526071; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Yalo note it</h1>
+    <button id="configure">设置本地记录目录</button>
+    <button id="record" class="primary">Yalo note it</button>
+    <button id="stop" class="danger">停止当前任务</button>
+    <div id="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

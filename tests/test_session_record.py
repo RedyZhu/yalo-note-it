@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/yalo-note-it/scripts'
 sys.path.insert(0, str(SCRIPTS))
-import archive_session as archive
+import record_session as archive
 from codex_format import ArchiveError, is_trigger, keep_record
 from session_assets import plan_assets
 
@@ -73,10 +73,12 @@ class ArchiveTests(unittest.TestCase):
         for text in ['亚楼记一下', ' 亚楼，你记一下。\n', '亚楼，记一下', '亚楼 记一下!', '亚楼你记一下',
                      '刘亚楼，你记一下', '刘亚楼你记一下', '请亚楼把结论记一下谢谢',
                      '亚楼\n请记一下', '亚楼记一下？', '“亚楼记一下”', '不要亚楼记一下',
-                     '解释亚楼记一下', '```\n亚楼记一下\n```']:
+                     '解释亚楼记一下', '```\n亚楼记一下\n```', 'yalo note it', 'Yalo, note it',
+                     'YALO — NOTE IT', 'please yalo, could you note it', 'yalo\nnote it']:
             with self.subTest(text=text):
                 self.assertTrue(is_trigger(text))
-        for text in ['记一下亚楼', '亚楼', '记一下', '这个议题到此为止', '这个问题到此为止', '$yalo-note-it']:
+        for text in ['记一下亚楼', '亚楼', '记一下', 'note it yalo', 'yalo', 'note it',
+                     'yalonote it', 'yalo notebook', '这个议题到此为止', '这个问题到此为止', '$yalo-note-it']:
             with self.subTest(text=text):
                 self.assertFalse(is_trigger(text))
 

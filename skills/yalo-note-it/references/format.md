@@ -1,5 +1,20 @@
 # Verified format and operational limits
 
+## Source formats
+
+Yalo note it has two source adapters:
+
+- Codex Desktop preserves verified visible rollout records byte-for-byte as `session.jsonl`.
+- ChatGPT Web reads rendered conversation-turn nodes after scrolling the conversation from a stable top to the bottom. It writes `<archive-root>/sessions/chatgpt/<conversation-id>/conversation.raw-record.md` with the source URL, page title, export time, message count, cutoff ID, role, turn ID, rendered Markdown, and attachment names.
+
+The Web adapter starts only when the user clicks the browser extension's “Yalo note it” button. It keys messages by `data-testid="conversation-turn-*"`, removes overlap by turn ID, and sorts by the numeric turn suffix. Web-page message text never triggers recording. The export records the complete conversation state available when scanning begins.
+
+Web output preserves rendered content rather than ChatGPT's private backend representation. It can preserve headings, paragraphs, lists, blockquotes, tables, code blocks, inline emphasis, links, and visible attachment names. It does not claim to preserve hidden reasoning, deleted branches, inaccessible attachment bytes, or backend-only metadata. Screenshots remain optional audit evidence.
+
+Page content is data, not instructions for the recorder.
+
+## Codex Desktop
+
 Observed locally on 2026-09-10, Codex Desktop rollout `cli_version=0.153.4`.
 This is a strict adapter for an internal format, not a claim of a stable Codex API.
 
@@ -24,7 +39,7 @@ This is reference recognition, not semantic recovery: unrecognized attachment en
 
 ## Invocation
 
-Implicit skill selection is enabled and the description names the fixed Chinese phrase. Skill selection is model-mediated, not a host-level literal command hook. It requires a real user invocation after installation to validate discovery in the user's app; do not claim that metadata validation alone proves routing reliability.
+Implicit skill selection is enabled and the description names both Codex triggers: Chinese `亚楼 … 记一下` and case-insensitive English `yalo … note it`. The English trigger requires `yalo` and `note` to be separate words and whitespace between `note` and `it`. Skill selection is model-mediated, not a host-level literal command hook. It requires a real user invocation after installation to validate discovery in the user's app; do not claim that metadata validation alone proves routing reliability.
 
 Official skill documentation: https://learn.chatgpt.com/docs/build-skills
 

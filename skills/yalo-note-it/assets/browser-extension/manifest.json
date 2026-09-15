@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Yalo note it",
+  "version": "0.7.3",
+  "description": "Save a faithful local record of the current ChatGPT Web conversation.",
+  "permissions": ["activeTab", "scripting", "tabs"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Yalo note it",
+    "default_popup": "popup.html"
+  }
+}

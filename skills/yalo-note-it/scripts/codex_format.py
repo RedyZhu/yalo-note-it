@@ -13,11 +13,14 @@ EXCLUDED_EVENTS = {'task_started', 'task_complete', 'thread_settings_applied',
 INTERNAL_USER_KINDS = {'plugins.recommendations', 'agents_md.instructions',
                        'environments.environment_context'}
 VISIBLE_USER_KINDS = {'user.text', 'user.image'}
-TRIGGER = re.compile(r'亚楼.*?记一下', re.DOTALL)
+TRIGGERS = (
+    re.compile(r'亚楼.*?记一下', re.DOTALL),
+    re.compile(r'\byalo\b.*?\bnote\s+it\b', re.DOTALL | re.IGNORECASE),
+)
 
 
 def is_trigger(text):
-    return isinstance(text, str) and TRIGGER.search(text) is not None
+    return isinstance(text, str) and any(pattern.search(text) for pattern in TRIGGERS)
 
 
 def timestamp(value):
