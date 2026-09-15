@@ -11,6 +11,7 @@ archive-config.json
 .ai-native-brand/
 sessions/
 archived_sessions/
+artifacts/chatgpt-record/
 *.jsonl
 HANDOFF.md
 Agent_Session_Archive_Foundation_v0.1.md
