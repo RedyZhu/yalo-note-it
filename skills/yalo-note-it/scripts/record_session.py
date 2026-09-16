@@ -1,5 +1,6 @@
 """Local, byte-preserving Codex session archive. Python standard library only."""
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -10,6 +11,20 @@ import tempfile
 import uuid
 
 from codex_format import ArchiveError, is_trigger, keep_record, timestamp, user_text
+
+
+@dataclass(frozen=True)
+class SourceSegment:
+    path: Path
+    end_byte_offset: int | None = None
+
+
+@dataclass(frozen=True)
+class SessionSource:
+    segments: tuple[SourceSegment, ...]
+
+    def __str__(self):
+        return ' -> '.join(str(segment.path) for segment in self.segments)
 
 
 def codex_home():
@@ -29,16 +44,8 @@ def current_id():
     return value
 
 
-def locate_source(session_id, home):
-    candidates = []
-    for folder in ('sessions', 'archived_sessions'):
-        root = home / folder
-        if root.exists():
-            candidates.extend(root.rglob('*' + session_id + '*.jsonl'))
-    if len(candidates) != 1:
-        raise ArchiveError(f'Expected one source for current Session; found {len(candidates)}')
-    source = candidates[0].resolve()
-    with source.open('rb') as handle:
+def read_metadata(path, session_id):
+    with path.open('rb') as handle:
         try:
             meta = json.loads(handle.readline().decode('utf-8'))
         except (ValueError, UnicodeError) as exc:
@@ -48,13 +55,86 @@ def locate_source(session_id, home):
             or payload.get('id', session_id) != session_id):
         raise ArchiveError('Source session_meta does not match current Session ID')
     timestamp(meta.get('timestamp'))
-    return source
+    return meta
+
+
+def validate_history_boundary(path, end_ordinal, end_offset):
+    if not isinstance(end_ordinal, int) or end_ordinal <= 0:
+        return False
+    if not isinstance(end_offset, int) or end_offset <= 0:
+        return False
+    size = path.stat().st_size
+    if end_offset > size:
+        return False
+    with path.open('rb') as handle:
+        prefix = handle.read(end_offset)
+    if len(prefix) != end_offset or not prefix.endswith(b'\n'):
+        return False
+    lines = prefix.splitlines()
+    if len(lines) != end_ordinal:
+        return False
+    try:
+        last = json.loads(lines[-1].decode('utf-8'))
+    except (ValueError, UnicodeError):
+        return False
+    return last.get('ordinal') == end_ordinal - 1
+
+
+def locate_source(session_id, home):
+    candidates = []
+    for folder in ('sessions', 'archived_sessions'):
+        root = home / folder
+        if root.exists():
+            candidates.extend(root.rglob('*' + session_id + '*.jsonl'))
+    if not candidates:
+        raise ArchiveError('No source for current Session')
+    sources = [path.resolve() for path in candidates]
+    metadata = {path: read_metadata(path, session_id) for path in sources}
+    if len(sources) == 1:
+        return sources[0]
+
+    parents = {}
+    for child, meta in metadata.items():
+        base = meta['payload'].get('history_base')
+        if base is None:
+            continue
+        if not isinstance(base, dict) or base.get('thread_id') != session_id:
+            raise ArchiveError('Invalid history_base metadata')
+        end_ordinal = base.get('end_ordinal_exclusive')
+        end_offset = base.get('end_byte_offset')
+        matches = [path for path in sources if path != child
+                   and validate_history_boundary(path, end_ordinal, end_offset)]
+        if len(matches) != 1:
+            raise ArchiveError('History base does not resolve to exactly one source')
+        parents[child] = (matches[0], end_offset)
+
+    leaves = [path for path in sources if path not in {parent for parent, _ in parents.values()}]
+    if len(leaves) != 1:
+        raise ArchiveError(f'Expected one active source branch; found {len(leaves)}')
+
+    chain = [SourceSegment(leaves[0])]
+    current = leaves[0]
+    seen = set()
+    while current in parents:
+        if current in seen:
+            raise ArchiveError('Cycle in source history')
+        seen.add(current)
+        parent, offset = parents[current]
+        chain.append(SourceSegment(parent, offset))
+        current = parent
+    chain.reverse()
+    if {segment.path for segment in chain} != set(sources):
+        raise ArchiveError('Unrelated source candidates remain after history reconstruction')
+    return SessionSource(tuple(chain))
 
 
 def read_records(source, stop_id=None):
     records = []
-    with source.open('rb') as handle:
-        for number, raw in enumerate(handle, 1):
+    segments = source.segments if isinstance(source, SessionSource) else (SourceSegment(source),)
+    for segment in segments:
+        with segment.path.open('rb') as handle:
+            data = handle.read() if segment.end_byte_offset is None else handle.read(segment.end_byte_offset)
+        for number, raw in enumerate(data.splitlines(keepends=True), 1):
             if not raw.endswith(b'\n'):
                 # An active rollout can have an unfinished final write. Never archive it.
                 break

@@ -24,7 +24,7 @@ This is a strict adapter for an internal format, not a claim of a stable Codex A
 - User messages carry `internal_chat_message_metadata_passthrough.content_item_kinds`. Verified visible kinds: `user.text`, `user.image`. Verified injected kinds: `plugins.recommendations`, `agents_md.instructions`, `environments.environment_context`. Mixed/unknown provenance is rejected rather than editing the row.
 - Assistant visible phases observed: `commentary`, `final_answer`. `final` is supported as the equivalent declared channel. Analysis/reasoning is excluded.
 - Tool calls use `custom_tool_call`; results use `custom_tool_call_output` with a list of `input_text` blocks. Image content uses `input_image` with `image_url` and optional `detail`. Embedded image URLs are retained in place.
-- Additional observed tool forms: `function_call` with `id`, `call_id`, `name`, string `arguments`; `function_call_output` with `id`, `call_id`, string `output`. These are preserved too; no synthetic execution status is added when the source omits it.
+- Additional observed tool forms: `function_call` with `id`, `call_id`, `name`, string `arguments`; `function_call_output` with `id`, `call_id`, and either string `output` or a non-empty list of `input_text` blocks. These are preserved too; no synthetic execution status is added when the source omits it.
 - Known excluded top-level records: `world_state`, `turn_context`, `token_usage_record`. Known event messages: task start/complete, thread settings, token count and `item_completed` (UI mirrors of response records). `reasoning` response items are excluded, without reading or extracting their content.
 - Metadata includes `base_instructions`, so the user approved excluding the entire metadata row. It is still required to identify the source and choose the session year/month.
 - Other formats (including legacy messages without provenance, alternate tool representations, compaction records and new attachment types) fail explicitly pending verification. No silent compatibility fallback.
@@ -43,8 +43,8 @@ Implicit skill selection is enabled and the description names both Codex trigger
 
 Official skill documentation: https://learn.chatgpt.com/docs/build-skills
 
-## Known blocker: edited-message history branches
+## Edited-message history branches
 
-A real conversation was found across three user-history files. Child metadata contains history_base.thread_id, end_ordinal_exclusive, and end_byte_offset. Both observed inheritance boundaries resolve to existing files and complete lines. An additional guardian-review file shares the session ID but is not user conversation history. Neither filename substring matching nor session ID alone is sufficient to reconstruct the active branch.
+A child history file declares `history_base.thread_id`, `end_ordinal_exclusive`, and `end_byte_offset`. The adapter resolves each parent only when exactly one candidate has a complete newline-terminated prefix at that byte offset, contains exactly the declared number of records, and ends at ordinal `end_ordinal_exclusive - 1`. It then reads the verified parent prefix followed by the child file. Abandoned parent records after the boundary are not retained.
 
-The shipped implementation still rejects multiple source candidates. Branch-aware retrieval and reconstruction have not been implemented or validated. Do not select the newest file or concatenate all matching files as a workaround.
+Filename matching, session ID, and modification time are never sufficient on their own. Cycles, ambiguous parents, invalid boundaries, multiple active leaves, and unrelated candidates (including guardian-review files sharing the session ID) still fail explicitly rather than being guessed or concatenated.

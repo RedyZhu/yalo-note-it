@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Yalo note it original mark</title>
+  <desc id="desc">A rounded sheet of paper and a separate folded corner whose negative space forms a Y.</desc>
+  <defs>
+    <mask id="paper-cut">
+      <rect width="512" height="512" fill="#fff"/>
+      <path d="M251 225 L336 284" fill="none" stroke="#000" stroke-width="20" stroke-linecap="butt"/>
+    </mask>
+  </defs>
+  <path
+    d="M88 64 H424 C437 64 448 75 448 88 V164 L336 284 L324 301 V428 C324 439 315 448 304 448 H88 C75 448 64 437 64 424 V88 C64 75 75 64 88 64 Z"
+    fill="#171717"
+    mask="url(#paper-cut)"
+  />
+  <path d="M347 304 L448 202 V320 L347 427 Z" fill="#171717"/>
+</svg>

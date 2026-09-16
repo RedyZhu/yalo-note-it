@@ -67,6 +67,17 @@ def validate_content(content):
             raise ArchiveError('Unsupported content type: ' + str(kind))
 
 
+def validate_function_output(output):
+    if isinstance(output, str):
+        return
+    if not isinstance(output, list) or not output:
+        raise ArchiveError('Unsupported function output')
+    for block in output:
+        require(block, ['type', 'text'])
+        if block['type'] != 'input_text' or not isinstance(block['text'], str):
+            raise ArchiveError('Unsupported function output content')
+
+
 def keep_record(record, keep_meta=False):
     require(record, ['timestamp', 'type', 'payload'])
     timestamp(record['timestamp'])
@@ -111,8 +122,7 @@ def keep_record(record, keep_meta=False):
         return True
     if item == 'function_call_output':
         require(payload, ['id', 'call_id', 'output'])
-        if not isinstance(payload['output'], str):
-            raise ArchiveError('Unsupported function output')
+        validate_function_output(payload['output'])
         return True
     if item == 'custom_tool_call':
         require(payload, ['id', 'call_id', 'name', 'input', 'status'])

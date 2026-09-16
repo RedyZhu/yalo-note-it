@@ -100,7 +100,13 @@ def plan_assets(selected, home):
         elif p.get('type') == 'custom_tool_call_output':
             blocks = p['output']
         elif p.get('type') == 'function_call_output':
-            blocks = [{'type': 'input_text', 'text': p['output']}]
+            output = p['output']
+            if isinstance(output, str):
+                blocks = [{'type': 'input_text', 'text': output}]
+            elif isinstance(output, list):
+                blocks = output
+            else:
+                raise ArchiveError('Unsupported function output')
         else:
             continue
         for block in blocks:

@@ -1,5 +1,9 @@
+importScripts("providers/chatgpt.js");
+
 const LOAD_SETTLE_MS = 4000;
 const MAX_RECORD_STEPS = 2000;
+
+const PROVIDERS = self.YaloNoteProviders ?? [];
 
 let activeRun = null;
 
@@ -14,144 +18,15 @@ async function setBadge(tabId, text, color = "#2563eb") {
   await chrome.action.setBadgeBackgroundColor({ tabId, color });
   await chrome.action.setBadgeText({ tabId, text });
 }
-async function inspectRecordPage(tabId, moveTo) {
+function resolveProvider(url) {
+  return PROVIDERS.find((provider) => provider.matchesUrl(url)) ?? null;
+}
+
+async function inspectRecordPage(tabId, provider, moveTo) {
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId },
     args: [moveTo],
-    func: (targetPosition) => {
-      function findScroller(turns) {
-        const first = turns[0] ?? document.querySelector("main");
-        const last = turns.at(-1) ?? first;
-        if (!first) return null;
-        for (let parent = first; parent; parent = parent.parentElement) {
-          if (!parent.contains(last)) continue;
-          const style = getComputedStyle(parent);
-          if (
-            /(auto|scroll)/.test(style.overflowY) &&
-            parent.clientHeight >= innerHeight * 0.45 &&
-            parent.scrollHeight > parent.clientHeight + 40
-          ) return parent;
-        }
-        return document.scrollingElement;
-      }
-
-      function cleanText(value) {
-        return (value ?? "").replace(/\u00a0/gu, " ").trim();
-      }
-
-      function inlineMarkdown(node) {
-        if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
-        if (node.nodeType !== Node.ELEMENT_NODE) return "";
-        const element = node;
-        const tag = element.tagName.toLowerCase();
-        const content = [...element.childNodes].map(inlineMarkdown).join("");
-        if (tag === "br") return "\n";
-        if (tag === "code" && element.parentElement?.tagName !== "PRE") {
-          return `\`${content.replace(/`/gu, "\\`")}\``;
-        }
-        if (tag === "strong" || tag === "b") return `**${content}**`;
-        if (tag === "em" || tag === "i") return `*${content}*`;
-        if (tag === "a") {
-          const href = element.getAttribute("href") ?? "";
-          return href ? `[${content || href}](${href})` : content;
-        }
-        return content;
-      }
-
-      function blockMarkdown(root) {
-        const blocks = [];
-        const visit = (element, depth = 0) => {
-          const tag = element.tagName.toLowerCase();
-          if (tag === "pre") {
-            const code = element.querySelector("code");
-            const language = [...(code?.classList ?? [])]
-              .find((name) => name.startsWith("language-"))
-              ?.slice(9) ?? "";
-            blocks.push(`\`\`\`${language}\n${(code?.innerText ?? element.innerText ?? "").trimEnd()}\n\`\`\``);
-            return;
-          }
-          if (/^h[1-6]$/u.test(tag)) {
-            blocks.push(`${"#".repeat(Number(tag[1]))} ${cleanText(inlineMarkdown(element))}`);
-            return;
-          }
-          if (tag === "blockquote") {
-            blocks.push(cleanText(element.innerText).split("\n").map((line) => `> ${line}`).join("\n"));
-            return;
-          }
-          if (tag === "table") {
-            const rows = [...element.querySelectorAll("tr")].map((row) =>
-              [...row.querySelectorAll(":scope > th, :scope > td")].map((cell) => cleanText(inlineMarkdown(cell))),
-            );
-            if (rows.length) {
-              const width = Math.max(...rows.map((row) => row.length));
-              const normalized = rows.map((row) => [...row, ...Array(width - row.length).fill("")]);
-              blocks.push([
-                `| ${normalized[0].join(" | ")} |`,
-                `| ${Array(width).fill("---").join(" | ")} |`,
-                ...normalized.slice(1).map((row) => `| ${row.join(" | ")} |`),
-              ].join("\n"));
-            }
-            return;
-          }
-          if (tag === "ul" || tag === "ol") {
-            const ordered = tag === "ol";
-            const lines = [...element.children]
-              .filter((child) => child.tagName === "LI")
-              .map((item, index) => `${"  ".repeat(depth)}${ordered ? `${index + 1}.` : "-"} ${cleanText(inlineMarkdown(item))}`);
-            if (lines.length) blocks.push(lines.join("\n"));
-            return;
-          }
-          if (tag === "p") {
-            const text = cleanText(inlineMarkdown(element));
-            if (text) blocks.push(text);
-            return;
-          }
-          const blockChildren = [...element.children].filter((child) =>
-            /^(P|PRE|H[1-6]|UL|OL|BLOCKQUOTE|TABLE)$/u.test(child.tagName),
-          );
-          if (blockChildren.length) {
-            for (const child of blockChildren) visit(child, depth + 1);
-          } else {
-            const text = cleanText(inlineMarkdown(element));
-            if (text) blocks.push(text);
-          }
-        };
-        visit(root);
-        return blocks.join("\n\n").replace(/\n{3,}/gu, "\n\n").trim();
-      }
-
-      const turns = [...document.querySelectorAll("main [data-testid^='conversation-turn-']")];
-      const scroller = findScroller(turns);
-      if (!scroller) return { error: "找不到 ChatGPT 对话滚动区域。" };
-      if (targetPosition === "top") scroller.scrollTo({ top: 0, behavior: "instant" });
-      if (targetPosition === "next") {
-        scroller.scrollTo({
-          top: Math.min(scroller.scrollHeight - scroller.clientHeight, scroller.scrollTop + Math.floor(scroller.clientHeight * 0.75)),
-          behavior: "instant",
-        });
-      }
-      const records = turns.map((turn) => {
-        const content = turn.querySelector("[data-message-author-role]") ?? turn;
-        const attachments = [...turn.querySelectorAll("img")]
-          .map((image) => image.getAttribute("alt"))
-          .filter(Boolean);
-        return {
-          id: turn.getAttribute("data-testid") ?? "",
-          role: content.getAttribute("data-message-author-role") ?? "unknown",
-          markdown: blockMarkdown(content),
-          attachments: [...new Set(attachments)],
-        };
-      });
-      return {
-        records,
-        scrollTop: scroller.scrollTop,
-        scrollHeight: scroller.scrollHeight,
-        viewport: scroller.clientHeight,
-        atBottom: scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 3,
-        title: document.title,
-        url: location.href,
-      };
-    },
+    func: provider.inspectPage,
   });
   return result;
 }
@@ -175,14 +50,14 @@ async function loadArchiveRoot() {
   }
 }
 
-async function writeWebRecord(conversationId, body) {
+async function writeWebRecord(providerId, conversationId, body) {
   const root = await loadArchiveRoot();
   if (!root) throw new Error("请先在插件中把记录目录设置为 D:\\MyData\\yalo-note。" );
   if ((await root.queryPermission({ mode: "readwrite" })) !== "granted") {
     throw new Error("记录目录权限已失效，请在插件中重新设置目录。" );
   }
   let directory = root;
-  for (const name of ["sessions", "chatgpt", conversationId]) {
+  for (const name of ["sessions", providerId, conversationId]) {
     directory = await directory.getDirectoryHandle(name, { create: true });
   }
   const file = await directory.getFileHandle("conversation.raw-record.md", { create: true });
@@ -194,19 +69,19 @@ async function writeWebRecord(conversationId, body) {
   }
 }
 
-async function runRecordExport(tab, cutoffId = null) {
+async function runRecordExport(tab, provider, cutoffId = null) {
   const run = { tabId: tab.id, stopped: false, startedAt: new Date().toISOString() };
   activeRun = run;
   const records = new Map();
   try {
     await setBadge(tab.id, "REC", "#7c3aed");
-    let state = await inspectRecordPage(tab.id, "top");
+    let state = await inspectRecordPage(tab.id, provider, "top");
     if (state?.error) throw new Error(state.error);
     let stableTop = 0;
     let topSignature = "";
     for (let step = 0; step < 20 && !run.stopped; step += 1) {
       await sleep(LOAD_SETTLE_MS);
-      state = await inspectRecordPage(tab.id, "top");
+      state = await inspectRecordPage(tab.id, provider, "top");
       if (state?.error) throw new Error(state.error);
       const signature = `${state.scrollHeight}|${state.records[0]?.id ?? ""}`;
       stableTop = signature === topSignature ? stableTop + 1 : 0;
@@ -214,16 +89,16 @@ async function runRecordExport(tab, cutoffId = null) {
       if (stableTop >= 2) break;
     }
     if (stableTop < 2) throw new Error("达到等待上限前仍未确认稳定的对话顶部。");
-    state = await inspectRecordPage(tab.id, "none");
+    state = await inspectRecordPage(tab.id, provider, "none");
     let stableBottom = 0;
     for (let step = 0; step < MAX_RECORD_STEPS && !run.stopped; step += 1) {
       for (const record of state.records) records.set(record.id, record);
       stableBottom = state.atBottom ? stableBottom + 1 : 0;
       if (stableBottom >= 3) break;
-      state = await inspectRecordPage(tab.id, "next");
+      state = await inspectRecordPage(tab.id, provider, "next");
       if (state?.error) throw new Error(state.error);
       await sleep(120);
-      state = await inspectRecordPage(tab.id, "none");
+      state = await inspectRecordPage(tab.id, provider, "none");
       await setBadge(tab.id, String(records.size), "#7c3aed");
     }
     let ordered = [...records.values()].sort((left, right) => {
@@ -236,9 +111,9 @@ async function runRecordExport(tab, cutoffId = null) {
       if (cutoffIndex < 0) throw new Error("没有在完整扫描中找到触发消息，未生成不完整记录。");
       ordered = ordered.slice(0, cutoffIndex + 1);
     }
-    const conversationId = state.url.match(/\/c\/([0-9a-f-]+)/iu)?.[1] ?? timestampForPath();
+    const conversationId = provider.conversationId(state.url) ?? timestampForPath();
     const lines = [
-      "# ChatGPT Conversation Raw Record",
+      `# ${provider.label} Conversation Raw Record`,
       "",
       `> Source: ${state.url}`,
       `> Page title: ${state.title}`,
@@ -256,7 +131,7 @@ async function runRecordExport(tab, cutoffId = null) {
       lines.push(record.markdown || "[无法辨认]", "");
     }
     const body = lines.join("\n");
-    await writeWebRecord(conversationId, body);
+    await writeWebRecord(provider.id, conversationId, body);
     await setBadge(tab.id, ordered.length ? "OK" : "ERR", ordered.length ? "#16a34a" : "#dc2626");
     return { ok: true, message: `已记录 ${ordered.length} 条消息。` };
   } catch (error) {
@@ -280,12 +155,13 @@ async function handleRecordControl(message) {
   if (activeRun) return { ok: false, message: "已有记录任务正在执行。" };
 
   const tab = await chrome.tabs.get(message.tabId);
-  if (!/^https:\/\/(chatgpt\.com|chat\.openai\.com)\//u.test(tab.url || "")) {
+  const provider = resolveProvider(tab.url);
+  if (!provider) {
     await setBadge(tab.id, "NO", "#dc2626");
-    return { ok: false, message: "请先打开目标 ChatGPT 对话。" };
+    return { ok: false, message: "当前网页尚未配置 Yalo note it 页面适配器。" };
   }
 
-  return runRecordExport(tab);
+  return runRecordExport(tab, provider);
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

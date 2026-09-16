@@ -29,7 +29,7 @@ description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文�
 4. 首次路径明确确认后执行 `configure --root ABSOLUTE_PATH --user-confirmed`。这会验证写入权限并原子保存独立配置。后续主动改路径也使用此命令。
 5. 执行 `archive --message-id ID --sha256 HASH`，必要时沿用第 2 步的 `--confirmed`。成功后简短回复“当前会话已归档”并给出返回文件链接；失败说明具体原因，不声称已成功或完整保存。
 
-脚本从 `CODEX_SESSION_ID` / `CODEX_THREAD_ID` 取得身份，两者冲突、缺失、多个候选文件或 metadata 校验失败均停止。禁止按修改时间猜当前 Session。`probe` 没有看到当前消息时可再读一次；仍未落盘就明确报告，不能缩短截止点。
+脚本从 `CODEX_SESSION_ID` / `CODEX_THREAD_ID` 取得身份，两者冲突、缺失或 metadata 校验失败均停止。多个候选文件仅在 `history_base` 的 ordinal 与字节边界能够唯一重建当前分支时接受；边界不完整、存在歧义或仍有无关候选时停止。禁止按修改时间猜当前 Session。`probe` 没有看到当前消息时可再读一次；仍未落盘就明确报告，不能缩短截止点。
 
 归档请求之后的执行回合不进入本次档案。首次配置时保留原始 `message_id` / `sha256`，后续路径确认不是新的截止点。上下文丢失导致无法确认原请求时停止并说明原因。
 
@@ -54,6 +54,12 @@ Yalo note it 尚未配置。
 ```
 
 只在用户明确确认后创建或验证路径及写入 `%USERPROFILE%\.ai-native-brand\archive-config.json`。配置仅包含 `archive_root`，升级安装不覆盖配置。
+
+## Web 目录授权
+
+浏览器插件选择目录后必须明确取得 `readwrite` 权限，并通过创建、写入、删除临时测试文件验证真实写入能力。只有验证通过才能保存目录句柄。句柄存在但权限不是 `granted` 时应提示用户重新设置，不能把“已选择目录”显示成配置成功。扩展更新后，用户需要在浏览器扩展管理页重新加载本地扩展。
+
+浏览器采集核心与站点页面结构必须分离。通用采集器只处理滚动、稳定等待、去重、排序、截止点、任务状态和写入；域名、会话 ID、消息节点、角色、正文和站点专属排除规则由 `assets/browser-extension/providers/` 中的适配器提供。当前只有 ChatGPT 适配器，不能把未注册或未验证的站点表述为已支持。
 
 ## 文件与格式边界
 

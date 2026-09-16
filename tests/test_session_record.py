@@ -92,6 +92,60 @@ class ArchiveTests(unittest.TestCase):
         self.source.write_bytes(b''.join(map(raw, self.rows)))
         with self.assertRaises(ArchiveError):
             archive.locate_source(SID, self.home)
+
+    def test_history_branch_is_reconstructed_from_verified_boundary(self):
+        parent_rows = [
+            {**record('session_meta', {'session_id': SID, 'id': SID,
+                                       'base_instructions': {'text': 'private'}}), 'ordinal': 0},
+            {**message('hello', 'first'), 'ordinal': 1},
+        ]
+        parent_data = b''.join(map(raw, parent_rows))
+        self.source.write_bytes(parent_data + raw({**message('abandoned', 'old'), 'ordinal': 2}))
+        child = self.source.with_name('branch-' + SID + '-child.jsonl')
+        child_rows = [
+            {**record('session_meta', {
+                'session_id': SID,
+                'id': SID,
+                'base_instructions': {'text': 'private'},
+                'history_base': {
+                    'thread_id': SID,
+                    'end_ordinal_exclusive': 2,
+                    'end_byte_offset': len(parent_data),
+                },
+            }), 'ordinal': 2},
+            {**message('yalo note it', 'branch-request'), 'ordinal': 3},
+        ]
+        child.write_bytes(b''.join(map(raw, child_rows)))
+
+        source = archive.locate_source(SID, self.home)
+        result = archive.probe(source)
+        selected, _ = archive.prepare(source, 'branch-request', archive.digest(raw(child_rows[-1])))
+
+        self.assertIsInstance(source, archive.SessionSource)
+        self.assertEqual([segment.path for segment in source.segments], [self.source, child])
+        self.assertEqual(result['message_id'], 'branch-request')
+        self.assertEqual([row['payload'].get('id') for _, row in selected], ['first', 'branch-request'])
+
+    def test_history_branch_rejects_unverified_boundary(self):
+        parent_rows = [
+            {**record('session_meta', {'session_id': SID, 'id': SID,
+                                       'base_instructions': {'text': 'private'}}), 'ordinal': 0},
+            {**message('hello', 'first'), 'ordinal': 1},
+        ]
+        self.source.write_bytes(b''.join(map(raw, parent_rows)))
+        child = self.source.with_name('branch-' + SID + '-child.jsonl')
+        child.write_bytes(raw({**record('session_meta', {
+            'session_id': SID,
+            'id': SID,
+            'history_base': {
+                'thread_id': SID,
+                'end_ordinal_exclusive': 2,
+                'end_byte_offset': self.source.stat().st_size - 1,
+            },
+        }), 'ordinal': 2}))
+
+        with self.assertRaises(ArchiveError):
+            archive.locate_source(SID, self.home)
         self.source.with_name('duplicate-' + SID + '.jsonl').write_bytes(self.source.read_bytes())
         with self.assertRaises(ArchiveError):
             archive.locate_source(SID, self.home)
@@ -144,6 +198,14 @@ class ArchiveTests(unittest.TestCase):
                                          'call_id': 'fc', 'output': '{"accepted":true}'})
         self.assertTrue(keep_record(call))
         self.assertTrue(keep_record(output))
+        output['payload']['output'] = [
+            {'type': 'input_text', 'text': 'first block'},
+            {'type': 'input_text', 'text': 'second block'},
+        ]
+        self.assertTrue(keep_record(output))
+        output['payload']['output'] = [{'type': 'output_text', 'text': 'unverified shape'}]
+        with self.assertRaises(ArchiveError):
+            keep_record(output)
         output['payload']['output'] = None
         with self.assertRaises(ArchiveError):
             keep_record(output)
@@ -222,6 +284,20 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual((output.parent / 'assets/picture.png').read_bytes(), b'\x00')
         self.assertEqual((output.parent / 'assets/picture-asset-1.png').read_bytes(), b'\x01')
         self.assertEqual(output.read_bytes(), b''.join(r for r, _ in rows))
+
+    def test_function_output_content_blocks_are_scanned_for_assets(self):
+        attachment = self.root / 'function-output.png'
+        attachment.write_bytes(b'image')
+        row = record('response_item', {
+            'type': 'function_call_output',
+            'id': 'function-result',
+            'call_id': 'function-call',
+            'output': [{'type': 'input_text', 'text': f'![image](<{attachment}>)'}],
+        })
+
+        assets = plan_assets([(raw(row), row)], self.home)
+
+        self.assertEqual([asset.source for asset in assets], [attachment.resolve()])
 
     def test_embedded_image_and_ordinary_file_need_no_copy(self):
         row = message('text')

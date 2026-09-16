@@ -1,0 +1,47 @@
+%!PS-Adobe-3.0 EPSF-3.0
+%%Creator: Yalo note it vector source
+%%Title: Yalo note it original mark
+%%BoundingBox: 0 0 512 512
+%%HiResBoundingBox: 0 0 512 512
+%%LanguageLevel: 2
+%%Pages: 1
+%%EndComments
+%%Page: 1 1
+gsave
+0 512 translate
+1 -1 scale
+0.0902 setgray
+
+% Main paper with the left arm of the Y knocked out.
+newpath
+88 64 moveto
+424 64 lineto
+437 64 448 75 448 88 curveto
+448 164 lineto
+336 284 lineto
+324 301 lineto
+324 428 lineto
+324 439 315 448 304 448 curveto
+88 448 lineto
+75 448 64 437 64 424 curveto
+64 88 lineto
+64 75 75 64 88 64 curveto
+closepath
+245.3 233.2 moveto
+330.3 292.2 lineto
+341.7 275.8 lineto
+256.7 216.8 lineto
+closepath
+eofill
+
+% Separate folded corner; the gaps form the right arm and stem of the Y.
+newpath
+347 304 moveto
+448 202 lineto
+448 320 lineto
+347 427 lineto
+closepath
+fill
+grestore
+showpage
+%%EOF
