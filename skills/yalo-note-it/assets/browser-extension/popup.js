@@ -1,4 +1,5 @@
 const statusElement = document.querySelector("#status");
+const ARCHIVE_FOLDER_NAME = "yalo note";
 
 async function openSettingsDatabase() {
   return new Promise((resolve, reject) => {
@@ -54,9 +55,12 @@ async function clearArchiveRoot() {
 }
 
 async function verifyWritable(handle) {
-  const permission = await handle.requestPermission({ mode: "readwrite" });
+  let permission = await handle.queryPermission({ mode: "readwrite" });
   if (permission !== "granted") {
-    throw new Error("Chrome 未授予所选目录的读写权限，请重新选择并允许访问。");
+    permission = await handle.requestPermission({ mode: "readwrite" });
+  }
+  if (permission !== "granted") {
+    throw new Error("浏览器未授予记录目录的读写权限，请重新授权或选择其他目录。");
   }
 
   const testName = `.yalo-note-write-test-${Date.now()}-${crypto.randomUUID()}.tmp`;
@@ -76,6 +80,49 @@ async function verifyWritable(handle) {
   }
 }
 
+async function copyDirectory(source, destination) {
+  for await (const [name, sourceEntry] of source.entries()) {
+    if (sourceEntry.kind === "directory") {
+      const targetDirectory = await destination.getDirectoryHandle(name, { create: true });
+      await copyDirectory(sourceEntry, targetDirectory);
+      continue;
+    }
+    const sourceFile = await sourceEntry.getFile();
+    let targetFile;
+    try {
+      targetFile = await destination.getFileHandle(name);
+      const existing = await targetFile.getFile();
+      const sourceBytes = new Uint8Array(await sourceFile.arrayBuffer());
+      const existingBytes = new Uint8Array(await existing.arrayBuffer());
+      const identical = sourceBytes.length === existingBytes.length
+        && sourceBytes.every((byte, index) => byte === existingBytes[index]);
+      if (!identical) {
+        throw new Error(`迁移目标存在同名冲突文件：${name}`);
+      }
+      continue;
+    } catch (error) {
+      if (error?.name !== "NotFoundError") throw error;
+    }
+    targetFile = await destination.getFileHandle(name, { create: true });
+    const writable = await targetFile.createWritable();
+    const contents = await sourceFile.arrayBuffer();
+    await writable.write(contents);
+    await writable.close();
+    const copied = new Uint8Array(await (await targetFile.getFile()).arrayBuffer());
+    const original = new Uint8Array(contents);
+    if (copied.length !== original.length
+        || !original.every((byte, index) => byte === copied[index])) {
+      throw new Error(`迁移文件校验失败：${name}`);
+    }
+  }
+}
+
+async function removeDirectoryContents(directory) {
+  for await (const [name, entry] of directory.entries()) {
+    await directory.removeEntry(name, { recursive: entry.kind === "directory" });
+  }
+}
+
 async function control(mode) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) {
@@ -87,15 +134,9 @@ async function control(mode) {
   try {
     if (mode === "record") {
       const handle = await readArchiveRoot();
-      if (!handle) throw new Error("尚未设置目录，请先选择 D:\\MyData\\yalo-note。");
-      let permission = await handle.queryPermission({ mode: "readwrite" });
-      if (permission !== "granted") {
-        statusElement.textContent = "请允许继续访问已保存的记录目录…";
-        permission = await handle.requestPermission({ mode: "readwrite" });
-      }
-      if (permission !== "granted") {
-        throw new Error("没有取得记录目录的写权限；目录句柄仍已保留，可再次点击 Yalo note it 授权。" );
-      }
+      if (!handle) throw new Error("尚未设置目录，请先录入一个明确的本地路径。");
+      statusElement.textContent = "正在确认记录目录权限与写入能力…";
+      await verifyWritable(handle);
       statusElement.textContent = "正在读取对话，请保持此窗口打开…";
     }
     const response = await chrome.runtime.sendMessage({
@@ -111,16 +152,29 @@ async function control(mode) {
 }
 
 async function configureRoot() {
-  let handle;
   try {
-    handle = await window.showDirectoryPicker({ id: "yalo-note-root", mode: "readwrite" });
+    const previous = await readArchiveRoot();
+    const base = await window.showDirectoryPicker({ id: "yalo-note-base", mode: "readwrite" });
+    const handle = await base.getDirectoryHandle(ARCHIVE_FOLDER_NAME, { create: true });
     statusElement.textContent = "正在验证目录读写权限…";
     await verifyWritable(handle);
+    if (previous && !(await previous.isSameEntry(handle))) {
+      const migrate = window.confirm("检测到原有记录目录。是否把原有内容全部迁移到新路径？\n\n选择“确定”迁移；选择“取消”则旧内容保留在原路径，新记录写入新路径。");
+      if (migrate) {
+        statusElement.textContent = "正在迁移原有记录，请勿关闭窗口…";
+        await copyDirectory(previous, handle);
+        await saveArchiveRoot(handle);
+        try {
+          await removeDirectoryContents(previous);
+        } catch (error) {
+          throw new Error(`内容已迁移且新路径已启用，但旧目录清理失败：${error?.message ?? "未知错误"}`);
+        }
+      }
+    }
     await saveArchiveRoot(handle);
     statusElement.textContent = `目录已验证并保存：${handle.name}`;
   } catch (error) {
     if (error?.name !== "AbortError") {
-      if (handle) await clearArchiveRoot().catch(() => {});
       statusElement.textContent = error?.message ?? "目录设置失败。";
     }
   }
@@ -133,7 +187,7 @@ document.querySelector("#stop").addEventListener("click", () => control("stop"))
 readArchiveRoot()
   .then(async (handle) => {
     if (!handle) {
-      statusElement.textContent = "尚未设置目录，请选择 D:\\MyData\\yalo-note。";
+      statusElement.textContent = "尚未设置目录，请录入一个明确的本地路径。";
       return;
     }
     const permission = await handle.queryPermission({ mode: "readwrite" });

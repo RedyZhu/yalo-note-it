@@ -25,9 +25,10 @@ description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文�
 
 1. 运行 `probe`，只读定位当前 Session 与最近一条可见用户消息。确认返回 `text` 就是本次口令或明确归档确认；不匹配则停止，不挑选历史口令替代当前请求。记录返回的 `message_id` 和 `sha256` 作为此次截止点。
 2. 运行 `check --message-id ID --sha256 HASH`，校验当前来源与附件，无归档副作用。仅对于 `$` 入口经用户明确确认的请求添加 `--confirmed`；它不能用于绕过固定口令。首次配置等待后仍使用原截止点，不重新选最近消息。
-3. 运行 `status`。未配置时，按下节请求首次路径确认；已配置直接继续。路径失效时报错，不回退默认路径。
-4. 首次路径明确确认后执行 `configure --root ABSOLUTE_PATH --user-confirmed`。这会验证写入权限并原子保存独立配置。后续主动改路径也使用此命令。
-5. 执行 `archive --message-id ID --sha256 HASH`，必要时沿用第 2 步的 `--confirmed`。成功后简短回复“当前会话已归档”并给出返回文件链接；失败说明具体原因，不声称已成功或完整保存。
+3. 运行 `status`。未配置时，按下节请求用户输入明确的绝对本地路径；已配置直接继续。路径失效时报错，不提供或回退到默认路径。
+4. 首次路径明确确认后执行 `configure --root ABSOLUTE_BASE_PATH --user-confirmed`。脚本在该路径下创建固定的 `yalo note` 子目录，验证写入权限并原子保存实际归档根目录。
+5. 用户主动更改路径时，先询问“是否把原有内容全部迁移到新路径？”。确认迁移后执行 `configure --root ABSOLUTE_BASE_PATH --user-confirmed --migrate-existing`；选择保留旧内容时执行同一命令并添加 `--keep-existing`。未取得明确选择时不得切换配置。迁移成功后删除旧归档目录；选择保留时旧目录不变。
+6. 执行 `archive --message-id ID --sha256 HASH`，必要时沿用第 2 步的 `--confirmed`。成功后简短回复“当前会话已归档”并给出返回文件链接；失败说明具体原因，不声称已成功或完整保存。
 
 脚本从 `CODEX_SESSION_ID` / `CODEX_THREAD_ID` 取得身份，两者冲突、缺失或 metadata 校验失败均停止。多个候选文件仅在 `history_base` 的 ordinal 与字节边界能够唯一重建当前分支时接受；边界不完整、存在歧义或仍有无关候选时停止。禁止按修改时间猜当前 Session。`probe` 没有看到当前消息时可再读一次；仍未落盘就明确报告，不能缩短截止点。
 
@@ -41,8 +42,8 @@ description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文�
 
 ```text
 Yalo note it 尚未配置。
-默认存档路径：D:\MyData\yalo-note\
-你可以回复“使用默认路径”，或者创建其他文件夹并将完整路径粘贴给我。
+请创建或选择一个本地位置，并把它的完整绝对路径粘贴给我。
+我会在该路径下创建“yalo note”文件夹保存记录；本工具不提供默认路径。
 档案可能包含对话和工具结果中的凭证、私有代码及个人信息；只保存在你确认的本地位置，不自动脱敏或上传。
 ```
 
@@ -53,17 +54,17 @@ Yalo note it 尚未配置。
 这是你给 AI 的收尾信号：我会将当前会话保存到这句话为止；它不代表你认可了所有答案，也不代表问题已经解决。
 ```
 
-只在用户明确确认后创建或验证路径及写入 `%USERPROFILE%\.ai-native-brand\archive-config.json`。配置仅包含 `archive_root`，升级安装不覆盖配置。
+只在用户明确提供路径后创建或验证 `<用户路径>/yalo note`，并写入 `%USERPROFILE%\.ai-native-brand\archive-config.json`。配置仅包含实际 `archive_root`，升级安装不覆盖配置。以后更改路径时必须询问是否迁移旧内容，不能静默移动、删除或遗留而不说明。
 
 ## Web 目录授权
 
-浏览器插件选择目录后必须明确取得 `readwrite` 权限，并通过创建、写入、删除临时测试文件验证真实写入能力。只有验证通过才能保存目录句柄。句柄存在但权限不是 `granted` 时应提示用户重新设置，不能把“已选择目录”显示成配置成功。扩展更新后，用户需要在浏览器扩展管理页重新加载本地扩展。
+浏览器插件让用户选择一个明确的本地父目录，然后在其中创建 `yalo note` 子目录。设置时必须对该子目录明确取得 `readwrite` 权限，并通过创建、写入、删除临时测试文件验证真实写入能力。每次点击 `Yalo note it` 后，都必须先检查句柄、现场恢复授权并再次完成真实写入测试；只有预检通过后才开始滚动和采集页面。重新选址时必须询问是否迁移旧内容；确认后复制并校验全部内容再清理旧目录，选择不迁移则保留旧内容。不能把“已选择目录”或“句柄仍存在”显示成可写。扩展更新后，用户需要在浏览器扩展管理页重新加载本地扩展。
 
 浏览器采集核心与站点页面结构必须分离。通用采集器只处理滚动、稳定等待、去重、排序、截止点、任务状态和写入；域名、会话 ID、消息节点、角色、正文和站点专属排除规则由 `assets/browser-extension/providers/` 中的适配器提供。当前只有 ChatGPT 适配器，不能把未注册或未验证的站点表述为已支持。
 
 ## 文件与格式边界
 
-Codex 输出为 `<archive-root>/sessions/codex/<YYYY-MM>/<session-id>/session.jsonl`；年月取来源 Session 开始时间，不重新生成时间。ChatGPT Web 输出目录为 `<archive-root>/sessions/chatgpt/<conversation-id>/`，包含 `conversation.raw-record.md`、`manifest.json` 和成功取得的 `assets/` 文件。默认 `<archive-root>` 是 `D:\MyData\yalo-note`；浏览器首次使用时必须通过目录选择器授予该目录的写权限。两种来源都保存原始记录，不是总结。重复调用更新同一文件；失败不得冒充成功。
+用户提供 `<base-path>` 后，实际 `<archive-root>` 固定为 `<base-path>/yalo note`。Codex 输出为 `<archive-root>/sessions/codex/<YYYY-MM>/<session-id>/session.jsonl`；年月取来源 Session 开始时间，不重新生成时间。ChatGPT Web 输出目录为 `<archive-root>/sessions/chatgpt/<conversation-id>/`，包含 `conversation.raw-record.md`、`manifest.json` 和成功取得的 `assets/` 文件。不存在默认路径；浏览器首次使用时必须通过目录选择器授予所选父目录下 `yalo note` 子目录的写权限。两种来源都保存原始记录，不是总结。重复调用更新同一文件；失败不得冒充成功。
 
 适配的是已实测的 Codex 桌面 rollout 结构。`session_meta` 只用于身份校验，因其内嵌基础指令，整行不保存。所有保留行的字节、字段、顺序、时间原样保留。内部 `user` 消息按 provenance 排除；未知或混合来源、未知可见性、未知记录类型均显式失败，不语义猜测。
 

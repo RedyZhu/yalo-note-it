@@ -6,11 +6,15 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tempfile
 import uuid
 
 from codex_format import ArchiveError, is_trigger, keep_record, timestamp, user_text
+
+
+ARCHIVE_FOLDER_NAME = 'yalo note'
 
 
 @dataclass(frozen=True)
@@ -253,16 +257,51 @@ def check_writable(root):
         os.fsync(stream.fileno())
 
 
-def configure(root):
-    if not root.is_absolute():
+def copy_archive_tree(source, destination):
+    if source == destination or source in destination.parents or destination in source.parents:
+        raise ArchiveError('Old and new archive directories must not contain each other')
+    for path in source.rglob('*'):
+        if path.is_symlink():
+            raise ArchiveError(f'Archive migration does not follow symbolic links: {path}')
+        relative = path.relative_to(source)
+        target = destination / relative
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if target.exists():
+            if not target.is_file() or target.read_bytes() != path.read_bytes():
+                raise ArchiveError(f'Archive migration destination conflict: {target}')
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        if target.read_bytes() != path.read_bytes():
+            raise ArchiveError(f'Archive migration verification failed: {target}')
+
+
+def configure(base, migrate_existing=None):
+    if not base.is_absolute():
         raise ArchiveError('Archive path must be absolute')
-    root = root.resolve()
+    base = base.resolve()
+    root = base / ARCHIVE_FOLDER_NAME
     if root == codex_home() or codex_home() in root.parents:
         raise ArchiveError('Archive destination must be outside Codex source storage')
+    existing = load_config()
+    if existing is not None and existing != root and migrate_existing is None:
+        raise ArchiveError('Archive path change requires an explicit migrate-or-keep choice')
     root.mkdir(parents=True, exist_ok=True)
     check_writable(root)
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if existing is not None and existing != root and migrate_existing:
+        copy_archive_tree(existing, root)
+        atomic_bytes(path, (json.dumps({'archive_root': str(root)}, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+        try:
+            shutil.rmtree(existing)
+        except OSError as exc:
+            raise ArchiveError(
+                f'Archive migrated and new path activated, but old directory cleanup failed: {existing}'
+            ) from exc
+        return root
     atomic_bytes(path, (json.dumps({'archive_root': str(root)}, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
     return root
 
@@ -306,6 +345,9 @@ def main():
     config = sub.add_parser('configure')
     config.add_argument('--root', type=Path, required=True)
     config.add_argument('--user-confirmed', action='store_true', required=True)
+    migration = config.add_mutually_exclusive_group()
+    migration.add_argument('--migrate-existing', action='store_true')
+    migration.add_argument('--keep-existing', action='store_true')
     inspect = sub.add_parser('probe')
     inspect.add_argument('--message-id')
     for verb in ('check', 'archive'):
@@ -319,7 +361,8 @@ def main():
             root = load_config()
             result = {'configured': root is not None, 'archive_root': str(root) if root else None}
         elif args.command == 'configure':
-            result = {'archive_root': str(configure(args.root))}
+            choice = True if args.migrate_existing else False if args.keep_existing else None
+            result = {'archive_root': str(configure(args.root, choice))}
         else:
             sid = current_id()
             source = locate_source(sid, codex_home())

@@ -90,7 +90,7 @@ async function writeFile(directory, name, contents) {
 
 async function writeWebArchive(providerId, conversationId, body, artifacts, sourceUrl) {
   const root = await loadArchiveRoot();
-  if (!root) throw new Error("请先在插件中把记录目录设置为 D:\\MyData\\yalo-note。" );
+  if (!root) throw new Error("请先在插件中录入一个明确的本地路径。" );
   if ((await root.queryPermission({ mode: "readwrite" })) !== "granted") {
     throw new Error("记录目录权限已失效，请在插件中重新设置目录。" );
   }

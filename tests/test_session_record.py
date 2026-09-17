@@ -306,7 +306,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(selected[-1][1]['payload']['id'], 'confirmed')
 
     def test_configuration_reply_does_not_move_cutoff(self):
-        self.source.write_bytes(self.source.read_bytes() + raw(message('使用默认路径', 'path-reply')))
+        self.source.write_bytes(self.source.read_bytes() + raw(message(r'D:\Records', 'path-reply')))
         selected, _ = self.prepare()
         self.assertEqual(selected[-1][1]['payload']['id'], 'request')
 
@@ -347,10 +347,61 @@ class ArchiveTests(unittest.TestCase):
         config = self.root / 'settings' / 'archive-config.json'
         with patch.object(archive, 'config_path', return_value=config):
             archive.configure(self.destination)
-            self.assertEqual(archive.load_config(), self.destination)
+            expected = self.destination / archive.ARCHIVE_FOLDER_NAME
+            self.assertEqual(archive.load_config(), expected)
             config.write_text(json.dumps({'archive_root': str(self.root / 'absent')}))
             with self.assertRaises(ArchiveError):
                 archive.load_config()
+
+    def test_path_change_requires_choice_and_can_keep_old_archive(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        first_base = self.root / 'first'
+        second_base = self.root / 'second'
+        with patch.object(archive, 'config_path', return_value=config):
+            first = archive.configure(first_base)
+            (first / 'old.txt').write_text('old', encoding='utf-8')
+            with self.assertRaisesRegex(ArchiveError, 'migrate-or-keep'):
+                archive.configure(second_base)
+            second = archive.configure(second_base, migrate_existing=False)
+            self.assertEqual(second, second_base / archive.ARCHIVE_FOLDER_NAME)
+            self.assertTrue((first / 'old.txt').is_file())
+            self.assertEqual(archive.load_config(), second)
+
+    def test_path_change_can_migrate_and_remove_old_archive(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        first_base = self.root / 'first'
+        second_base = self.root / 'second'
+        with patch.object(archive, 'config_path', return_value=config):
+            first = archive.configure(first_base)
+            nested = first / 'sessions' / 'codex'
+            nested.mkdir(parents=True)
+            (nested / 'old.txt').write_text('old', encoding='utf-8')
+            second = archive.configure(second_base, migrate_existing=True)
+            self.assertEqual((second / 'sessions/codex/old.txt').read_text(encoding='utf-8'), 'old')
+            self.assertFalse(first.exists())
+            self.assertEqual(archive.load_config(), second)
+
+    def test_cleanup_failure_keeps_new_complete_archive_active(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        first_base = self.root / 'first'
+        second_base = self.root / 'second'
+        with patch.object(archive, 'config_path', return_value=config):
+            first = archive.configure(first_base)
+            (first / 'old.txt').write_text('old', encoding='utf-8')
+            with patch.object(archive.shutil, 'rmtree', side_effect=OSError('denied')):
+                with self.assertRaisesRegex(ArchiveError, 'new path activated'):
+                    archive.configure(second_base, migrate_existing=True)
+            second = second_base / archive.ARCHIVE_FOLDER_NAME
+            self.assertEqual(archive.load_config(), second)
+            self.assertEqual((second / 'old.txt').read_text(encoding='utf-8'), 'old')
+
+    def test_configured_archive_is_created_under_user_selected_base(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        base = self.root / 'selected'
+        with patch.object(archive, 'config_path', return_value=config):
+            root = archive.configure(base)
+        self.assertEqual(root, base / 'yalo note')
+        self.assertTrue(root.is_dir())
 
     def test_temporary_attachment_and_name_collision(self):
         paths = [self.root / 'one' / 'picture.png', self.root / 'two' / 'picture.png']

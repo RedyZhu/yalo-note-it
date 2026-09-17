@@ -75,15 +75,30 @@ console.log(JSON.stringify({{
         manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
         readme = (EXTENSION / "README.md").read_text(encoding="utf-8")
 
-        self.assertEqual(manifest["version"], "0.9.1")
-        self.assertIn("当前版本：**0.9.1**", readme)
+        self.assertEqual(manifest["version"], "0.10.1")
+        self.assertIn("当前版本：**0.10.1**", readme)
 
     def test_record_button_can_restore_saved_directory_permission(self):
         popup = (EXTENSION / "popup.js").read_text(encoding="utf-8")
 
         self.assertIn('handle.queryPermission({ mode: "readwrite" })', popup)
         self.assertIn('handle.requestPermission({ mode: "readwrite" })', popup)
-        self.assertIn("目录句柄仍已保留", popup)
+        self.assertIn('await verifyWritable(handle)', popup)
+        self.assertIn('正在确认记录目录权限与写入能力', popup)
+        self.assertLess(
+            popup.index('await verifyWritable(handle)', popup.index('async function control')),
+            popup.index('chrome.runtime.sendMessage', popup.index('async function control')),
+        )
+
+    def test_configuration_creates_named_child_and_prompts_before_migration(self):
+        popup = (EXTENSION / "popup.js").read_text(encoding="utf-8")
+
+        self.assertIn('const ARCHIVE_FOLDER_NAME = "yalo note"', popup)
+        self.assertIn('getDirectoryHandle(ARCHIVE_FOLDER_NAME, { create: true })', popup)
+        self.assertIn('是否把原有内容全部迁移到新路径', popup)
+        self.assertIn('await copyDirectory(previous, handle)', popup)
+        self.assertIn('await removeDirectoryContents(previous)', popup)
+        self.assertNotIn('D:\\\\MyData\\\\yalo-note', popup)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,8 @@ archive-config.json
 sessions/
 archived_sessions/
 artifacts/chatgpt-record/
+.codex-remote-attachments/
+output/posters/
 *.jsonl
 HANDOFF.md
 Agent_Session_Archive_Foundation_v0.1.md

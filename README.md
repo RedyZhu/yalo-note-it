@@ -34,20 +34,20 @@ Copy-Item -LiteralPath '.\skills\yalo-note-it' -Destination $skillTarget -Recurs
 亚楼记一下
 ```
 
-首次使用会询问归档位置，默认是：
+首次使用会要求输入一个明确的本地绝对路径。例如：
 
 ```text
-D:\MyData\yalo-note\
+D:\MyData
 ```
 
-确认后才创建目录并保存配置。后续使用同一路径；失效时明确报错，不擅自回退默认路径。单独通过 `$yalo-note-it` 提及 Skill 时，会先询问是否要归档。
+确认后在该路径下创建 `yalo note` 文件夹并保存配置，因此示例的实际归档根目录是 `D:\MyData\yalo note\`。本工具不提供默认路径。后续使用同一路径；失效时明确报错。更改路径时会询问是否把原有内容全部迁移过去，未明确选择时不会切换配置。单独通过 `$yalo-note-it` 提及 Skill 时，会先询问是否要归档。
 
 归档截止于用户发出请求的那条消息；执行归档的 AI 回合和首次路径确认消息不进入该次档案。
 
 ## 输出与隐私
 
 ```text
-<archive-root>/sessions/codex/<YYYY-MM>/<session-id>/
+<用户路径>/yalo note/sessions/codex/<YYYY-MM>/<session-id>/
   session.jsonl
   assets/          # 仅在需要复制临时附件时创建
 ```
