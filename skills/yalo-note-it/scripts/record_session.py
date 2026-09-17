@@ -288,6 +288,8 @@ def configure(base, migrate_existing=None):
     existing = load_config()
     if existing is not None and existing != root and migrate_existing is None:
         raise ArchiveError('Archive path change requires an explicit migrate-or-keep choice')
+    if existing is not None and existing != root and (existing in root.parents or root in existing.parents):
+        raise ArchiveError('Old and new archive directories must not contain each other')
     root.mkdir(parents=True, exist_ok=True)
     check_writable(root)
     path = config_path()

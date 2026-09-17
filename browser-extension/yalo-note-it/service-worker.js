@@ -1,4 +1,4 @@
-importScripts("providers/chatgpt.js");
+importScripts("providers/chatgpt.js", "providers/deepseek.js");
 
 const LOAD_SETTLE_MS = 4000;
 const MAX_RECORD_STEPS = 2000;

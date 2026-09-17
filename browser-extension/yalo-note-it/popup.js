@@ -123,6 +123,14 @@ async function removeDirectoryContents(directory) {
   }
 }
 
+async function assertDirectoriesDoNotContainEachOther(previous, next) {
+  const nextInsidePrevious = await previous.resolve(next);
+  const previousInsideNext = await next.resolve(previous);
+  if (nextInsidePrevious !== null || previousInsideNext !== null) {
+    throw new Error("新旧记录目录不能互相包含，请选择旧目录之外的独立位置。");
+  }
+}
+
 async function control(mode) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) {
@@ -155,10 +163,15 @@ async function configureRoot() {
   try {
     const previous = await readArchiveRoot();
     const base = await window.showDirectoryPicker({ id: "yalo-note-base", mode: "readwrite" });
-    const handle = await base.getDirectoryHandle(ARCHIVE_FOLDER_NAME, { create: true });
+    const handle = base.name.toLocaleLowerCase() === ARCHIVE_FOLDER_NAME
+      ? base
+      : await base.getDirectoryHandle(ARCHIVE_FOLDER_NAME, { create: true });
     statusElement.textContent = "正在验证目录读写权限…";
     await verifyWritable(handle);
     if (previous && !(await previous.isSameEntry(handle))) {
+      statusElement.textContent = "正在确认原记录目录权限与写入能力…";
+      await verifyWritable(previous);
+      await assertDirectoriesDoNotContainEachOther(previous, handle);
       const migrate = window.confirm("检测到原有记录目录。是否把原有内容全部迁移到新路径？\n\n选择“确定”迁移；选择“取消”则旧内容保留在原路径，新记录写入新路径。");
       if (migrate) {
         statusElement.textContent = "正在迁移原有记录，请勿关闭窗口…";
@@ -180,7 +193,24 @@ async function configureRoot() {
   }
 }
 
+async function openArchiveRoot() {
+  try {
+    const handle = await readArchiveRoot();
+    if (!handle) throw new Error("尚未设置目录，请先设置本地记录目录。");
+    let permission = await handle.queryPermission({ mode: "read" });
+    if (permission !== "granted") permission = await handle.requestPermission({ mode: "read" });
+    if (permission !== "granted") throw new Error("浏览器未授予记录目录的读取权限。");
+    await window.showDirectoryPicker({ id: "yalo-note-open", mode: "read", startIn: handle });
+    statusElement.textContent = `已打开记录目录：${handle.name}`;
+  } catch (error) {
+    if (error?.name !== "AbortError") {
+      statusElement.textContent = error?.message ?? "无法打开记录目录。";
+    }
+  }
+}
+
 document.querySelector("#configure").addEventListener("click", configureRoot);
+document.querySelector("#open-directory").addEventListener("click", openArchiveRoot);
 document.querySelector("#record").addEventListener("click", () => control("record"));
 document.querySelector("#stop").addEventListener("click", () => control("stop"));
 

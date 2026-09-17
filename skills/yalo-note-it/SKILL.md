@@ -1,6 +1,6 @@
 ---
 name: yalo-note-it
-description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文“亚楼…记一下”记录当前会话，或在 ChatGPT Web 中点击配套浏览器插件的“Yalo note it”按钮；Codex 保存原生 JSONL，Web 导出 Raw Record。'
+description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文“亚楼…记一下”记录当前会话，将可见会话原样保存为本地 JSONL。'
 ---
 
 # Yalo note it
@@ -16,7 +16,6 @@ description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文�
 ## 来源路由
 
 - 当前环境是 Codex：按下方“Codex 执行”保存原生 Session JSONL。
-- 当前环境是 ChatGPT Web：点击 `assets/browser-extension` 中的“Yalo note it”按钮，把 Raw Record、附件清单和仍可下载的用户上传文件直接写入同一记录根目录。网页消息文字不触发插件。浏览器插件独立执行，不把网页内容送入模型上下文。
 - 用户提供 Web 插件导出的 Raw Record 时，把它视为该 Chat 的原始来源；除非用户另行要求，不把项目文件或其他 Chat 混入记录。
 
 ## Codex 执行
@@ -56,20 +55,12 @@ Yalo note it 尚未配置。
 
 只在用户明确提供路径后创建或验证 `<用户路径>/yalo note`，并写入 `%USERPROFILE%\.ai-native-brand\archive-config.json`。配置仅包含实际 `archive_root`，升级安装不覆盖配置。以后更改路径时必须询问是否迁移旧内容，不能静默移动、删除或遗留而不说明。
 
-## Web 目录授权
-
-浏览器插件让用户选择一个明确的本地父目录，然后在其中创建 `yalo note` 子目录。设置时必须对该子目录明确取得 `readwrite` 权限，并通过创建、写入、删除临时测试文件验证真实写入能力。每次点击 `Yalo note it` 后，都必须先检查句柄、现场恢复授权并再次完成真实写入测试；只有预检通过后才开始滚动和采集页面。重新选址时必须询问是否迁移旧内容；确认后复制并校验全部内容再清理旧目录，选择不迁移则保留旧内容。不能把“已选择目录”或“句柄仍存在”显示成可写。扩展更新后，用户需要在浏览器扩展管理页重新加载本地扩展。
-
-浏览器采集核心与站点页面结构必须分离。通用采集器只处理滚动、稳定等待、去重、排序、截止点、任务状态和写入；域名、会话 ID、消息节点、角色、正文和站点专属排除规则由 `assets/browser-extension/providers/` 中的适配器提供。当前只有 ChatGPT 适配器，不能把未注册或未验证的站点表述为已支持。
-
 ## 文件与格式边界
 
-用户提供 `<base-path>` 后，实际 `<archive-root>` 固定为 `<base-path>/yalo note`。Codex 输出为 `<archive-root>/sessions/codex/<YYYY-MM>/<session-id>/session.jsonl`；年月取来源 Session 开始时间，不重新生成时间。ChatGPT Web 输出目录为 `<archive-root>/sessions/chatgpt/<conversation-id>/`，包含 `conversation.raw-record.md`、`manifest.json` 和成功取得的 `assets/` 文件。不存在默认路径；浏览器首次使用时必须通过目录选择器授予所选父目录下 `yalo note` 子目录的写权限。两种来源都保存原始记录，不是总结。重复调用更新同一文件；失败不得冒充成功。
+用户提供 `<base-path>` 后，实际 `<archive-root>` 固定为 `<base-path>/yalo note`。Codex 输出为 `<archive-root>/sessions/codex/<YYYY-MM>/<session-id>/session.jsonl`；年月取来源 Session 开始时间，不重新生成时间。不存在默认路径。重复调用更新同一文件；失败不得冒充成功。
 
 适配的是已实测的 Codex 桌面 rollout 结构。`session_meta` 只用于身份校验，因其内嵌基础指令，整行不保存。所有保留行的字节、字段、顺序、时间原样保留。内部 `user` 消息按 provenance 排除；未知或混合来源、未知可见性、未知记录类型均显式失败，不语义猜测。
 
 Codex 端不重复复制内嵌图片；普通项目文件保留原引用；可识别的本地临时附件复制到 `assets`，保留原名，内容冲突时追加来源记录 ID。Codex 端不生成 manifest、Markdown、摘要或索引。读取档案时可用原引用的文件名查找 `assets`；冲突时结合来源记录 ID。缺失临时附件时报错，保留原来源及上次档案，不声称完成。
 
-ChatGPT Web 端只尝试保存用户主动上传到当前对话、且执行记录时仍可下载的文件。推荐把最终采用的文件重新上传到当前对话并明确说明其为最终版本。助手历史生成文件、Canvas 和其他会话文件不在本版本范围内。文件不可用或超过 25 MB 时，在 `manifest.json` 中记录失败状态，不能声称文件已保存。
-
-详见 [已验证的格式与限制](references/format.md)。浏览器插件的安装和使用见 [Web 插件说明](assets/browser-extension/README.md)。扩展格式应先检查真实结构并补充行为测试；不要把未知事件简单加入忽略列表以求成功。
+详见 [已验证的格式与限制](references/format.md)。不要把未知事件简单加入忽略列表以求成功。

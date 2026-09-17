@@ -26,6 +26,16 @@ Copy-Item -LiteralPath '.\skills\yalo-note-it' -Destination $skillTarget -Recurs
 
 安装只复制 Skill 文件，不初始化归档目录、不扫描或保存会话。需要让 Codex 加载新 Skill 后再使用；自然语言唤起依赖模型选择 Skill，并非宿主的确定性命令钩子。
 
+### 浏览器扩展
+
+浏览器扩展是独立产品，不随 Codex Skill 安装。Chrome 或 Edge 开启开发者模式后，使用“加载已解压的扩展程序”选择：
+
+```text
+browser-extension/yalo-note-it
+```
+
+需要生成 Chrome 安装包时，也只把这个目录作为扩展程序根目录。目录内直接包含 `manifest.json`，无需复制到 Skill。
+
 ## 使用
 
 在 Codex 对话中发送：
@@ -70,9 +80,10 @@ CI 配置为在 Windows 的 Python 3.11 和 3.14 上运行同一套测试。测�
 主要文件：
 
 - `skills/yalo-note-it/SKILL.md`：触发、首次配置和执行说明。
-- `skills/yalo-note-it/scripts/archive_session.py`：身份定位、截止点、配置及安全写入。
+- `skills/yalo-note-it/scripts/record_session.py`：身份定位、截止点、配置及安全写入。
 - `skills/yalo-note-it/scripts/codex_format.py`：已验证格式的记录筛选。
 - `skills/yalo-note-it/scripts/session_assets.py`：本地临时附件识别及复制。
-- `tests/test_session_archive.py`：行为测试。
+- `tests/test_session_record.py`：行为测试。
+- `browser-extension/yalo-note-it/`：独立的 ChatGPT/DeepSeek 浏览器扩展，可直接加载或打包。
 
 内部格式变化、历史分支与未知附件编码需要先验证再扩展适配，不应通过忽略未知记录让测试通过。详细兼容范围见 [格式说明](skills/yalo-note-it/references/format.md)。

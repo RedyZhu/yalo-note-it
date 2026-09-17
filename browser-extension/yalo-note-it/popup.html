@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ChatGPT Conversation Capture</title>
+    <title>Yalo note it</title>
     <style>
       body {
         box-sizing: border-box;
@@ -34,7 +34,25 @@
       }
       button.primary { color: #f7f5ef; border-color: #171717; background: #171717; }
       button.danger { color: #b42318; }
-      #status { min-height: 20px; color: #666158; font-size: 12px; }
+      #status { min-height: 38px; margin: 2px 0 8px; color: #666158; font-size: 12px; }
+      .directory-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .directory-actions button {
+        margin: 0;
+        padding: 6px 8px;
+        color: #666158;
+        font-size: 12px;
+        background: transparent;
+      }
+      .directory-hint {
+        margin: 7px 1px 0;
+        color: #827c72;
+        font-size: 11px;
+        line-height: 1.45;
+      }
     </style>
   </head>
   <body>
@@ -42,10 +60,14 @@
       <img src="icons/icon-32.png" alt="">
       <h1>Yalo note it</h1>
     </div>
-    <button id="configure">设置本地记录目录</button>
     <button id="record" class="primary">Yalo note it</button>
     <button id="stop" class="danger">停止当前任务</button>
     <div id="status"></div>
+    <div class="directory-actions">
+      <button id="configure">设置本地目录</button>
+      <button id="open-directory">打开本地目录</button>
+    </div>
+    <p class="directory-hint">已安装 Codex Skill？可直接选择它正在使用的“yalo note”文件夹，共用同一份记录。</p>
     <script src="popup.js"></script>
   </body>
 </html>

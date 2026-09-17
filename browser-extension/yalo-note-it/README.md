@@ -1,24 +1,24 @@
 # Yalo note it — Browser Extension
 
-这是 Yalo note it 的 ChatGPT Web 入口。只有点击插件中的“Yalo note it”按钮才会运行；平时不监听网页文字，也不执行后台轮询。
+这是 Yalo note it 的 AI Web 入口，当前支持 ChatGPT Web 与 DeepSeek Web。只有点击插件中的“Yalo note it”按钮才会运行；平时不监听网页文字，也不执行后台轮询。
 
-当前版本：**0.10.1**。
+当前版本：**0.11.2**。
 
-扩展图标使用 `icons/` 中的 16、32、48 和 128px PNG；可编辑的品牌母版位于 `../brand/yalo-mark.svg`。
+扩展图标使用 `icons/` 中的 16、32、48 和 128px PNG；可编辑的品牌母版位于 `brand/yalo-mark.svg`。
 
 ## 安装
 
 1. 在 Chrome 打开 `chrome://extensions`；Edge 打开 `edge://extensions`。
 2. 开启“开发者模式”。
 3. 点击“加载已解压的扩展程序”。
-4. 选择本目录：`skills/yalo-note-it/assets/browser-extension`。
+4. 选择本目录：`browser-extension/yalo-note-it`。
 5. 建议将扩展固定到浏览器工具栏。
 
 ## 使用
 
 ### 首次设置
 
-点击插件中的“设置本地记录目录”，选择一个明确的本地父目录并授予写权限。插件会在其中创建固定的 `yalo note` 子目录，并在子目录内创建、写入和删除临时测试文件；只有测试通过后才保存目录设置。本工具不提供默认路径。浏览器安全模型不允许扩展在未经选择授权的情况下直接写任意位置；此步骤通常只需一次。
+点击插件中的“设置本地目录”，选择一个明确的本地父目录并授予写权限。插件会在其中创建固定的 `yalo note` 子目录；如果 Codex Skill 已经配置过归档位置，也可以直接选择现有的 `yalo note` 文件夹，浏览器扩展会与 Skill 共用同一份记录，不会再创建嵌套子目录。插件会在实际记录目录内创建、写入和删除临时测试文件，只有测试通过后才保存设置。本工具不提供默认路径。浏览器安全模型不允许扩展在未经选择授权的情况下直接写任意位置；此步骤通常只需一次。
 
 以后重新选择父目录时，插件会询问是否把原有内容全部迁移到新路径。选择迁移时，插件先复制并校验内容，再清理旧目录；选择不迁移时，旧内容保留在原路径，新记录写入新路径。
 
@@ -33,11 +33,11 @@
 
 ### 导出 Raw Record
 
-1. 打开目标 ChatGPT 对话。
+1. 打开目标 ChatGPT 或 DeepSeek 对话。
 2. 点击扩展图标，再点击“Yalo note it”。ChatGPT 页面里的消息文字不会触发插件。
 3. 扩展会从顶部向下读取虚拟化加载的消息，按消息 ID 去重，并保留角色、标题、段落、列表、链接、表格、代码块和附件名称。
-4. 扫描经过用户上传的文件卡时，扩展会立即尝试通过 ChatGPT 当前仍有效的下载入口取得文件。建议先把最终采用的文件重新上传到当前对话，并用一条消息说明它是最终版本。
-5. 角标显示 `OK` 后，记录包位于 `<所选父目录>\yalo note\sessions\chatgpt\<conversation-id>\`：
+4. 在 ChatGPT 中，扫描经过用户上传的文件卡时，扩展会立即尝试通过当前仍有效的下载入口取得文件。DeepSeek 当前只记录上传文件名，不下载附件二进制。
+5. 角标显示 `OK` 后，记录包位于 `<所选父目录>\yalo note\sessions\<chatgpt|deepseek>\<conversation-id>\`：
    - `conversation.raw-record.md`：按顺序保存的网页对话原始记录；
    - `manifest.json`：文件保存状态、来源消息、原名、大小和 SHA-256；
    - `assets\`：成功取得的用户上传文件。
@@ -54,8 +54,8 @@
 1. 打开 `chrome://extensions` 或 `edge://extensions`；
 2. 找到 **Yalo note it**；
 3. 点击扩展卡片上的刷新按钮，或点击页面顶部“更新”；
-4. 确认版本号为 **0.10.1**；
-5. 重新打开 ChatGPT 页面和插件弹窗。
+4. 确认版本号为 **0.11.2**；
+5. 重新打开目标对话页面和插件弹窗。
 
 ## 目录权限故障
 
@@ -65,7 +65,7 @@
 
 处理方法：
 
-1. 确认扩展已经更新到 0.10.1；
+1. 确认扩展已经更新到 0.11.1；
 2. 点击“Yalo note it”；
 3. 接受浏览器对已保存 `yalo note` 目录的访问请求。
 
@@ -86,7 +86,24 @@ Chrome/Edge 会阻止扩展访问磁盘根目录和部分敏感系统位置。�
 - `service-worker.js`：通用采集引擎，负责滚动、等待、去重、排序、进度、停止和文件写入；
 - `providers/*.js`：站点适配器，负责域名、会话 URL、页面节点、消息角色和正文提取。
 
-当前只提供 ChatGPT 适配器 `providers/chatgpt.js`，所以 0.9.0 的实际支持范围仍然是 ChatGPT Web。未注册的网页会明确提示“当前网页尚未配置 Yalo note it 页面适配器”。适配器契约见 [`providers/README.md`](providers/README.md)。
+当前提供 ChatGPT 适配器 `providers/chatgpt.js` 和 DeepSeek 适配器 `providers/deepseek.js`。未注册的网页会明确提示“当前网页尚未配置 Yalo note it 页面适配器”。适配器契约见 [`providers/README.md`](providers/README.md)。
+
+## 0.11.0 变更
+
+- 增加 DeepSeek Web 会话适配，识别 `/a/chat/s/<conversation-id>`；
+- 适配 DeepSeek 的虚拟消息列表，并保存用户消息、最终回答、Markdown 结构和上传文件名；
+- 明确排除 DeepSeek 页面中的“已思考”推理内容；
+- DeepSeek 附件下载尚未支持，不把文件卡误报为已保存。
+
+## 0.11.1 变更
+
+- 将低频的目录操作移到弹窗底部，并缩小为同排按钮；
+- 增加“打开本地目录”，通过已保存的目录句柄定位到当前 `yalo note` 目录，不修改存储设置。
+
+## 0.11.2 变更
+
+- 在目录操作区提示已安装 Codex Skill 的用户直接复用现有 `yalo note` 文件夹；
+- 允许直接选择名为 `yalo note` 的实际记录目录，避免创建 `yalo note/yalo note`。
 
 ## 0.9.0 变更
 
@@ -131,8 +148,8 @@ Chrome/Edge 会阻止扩展访问磁盘根目录和部分敏感系统位置。�
 
 ## 限制
 
-- ChatGPT 页面结构变化后，滚动区域或“展开”按钮识别规则可能需要更新。
+- ChatGPT 或 DeepSeek 页面结构变化后，滚动区域或消息节点识别规则可能需要更新。
 - 单次任务最多扫描 2000 个滚动步，以防页面异常时无限运行。
 - 只保存用户上传到当前对话的文件；不追溯助手历史生成文件、Canvas 内容或其他会话中的文件。
-- 文件必须在执行记录时仍能通过 ChatGPT 页面下载。
+- ChatGPT 文件必须在执行记录时仍能通过页面下载；DeepSeek 当前只记录附件名称。
 - 单个文件保存上限为 25 MB。

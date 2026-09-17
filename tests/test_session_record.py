@@ -381,6 +381,27 @@ class ArchiveTests(unittest.TestCase):
             self.assertFalse(first.exists())
             self.assertEqual(archive.load_config(), second)
 
+    def test_path_change_rejects_new_archive_inside_old_archive(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        first_base = self.root / 'first'
+        with patch.object(archive, 'config_path', return_value=config):
+            first = archive.configure(first_base)
+            nested_base = first / 'nested'
+            with self.assertRaisesRegex(ArchiveError, 'must not contain each other'):
+                archive.configure(nested_base, migrate_existing=False)
+            self.assertFalse((nested_base / archive.ARCHIVE_FOLDER_NAME).exists())
+            self.assertEqual(archive.load_config(), first)
+
+    def test_path_change_rejects_old_archive_inside_new_archive(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        first_base = self.root / 'outer' / archive.ARCHIVE_FOLDER_NAME / 'inner'
+        with patch.object(archive, 'config_path', return_value=config):
+            first = archive.configure(first_base)
+            outer_base = self.root / 'outer'
+            with self.assertRaisesRegex(ArchiveError, 'must not contain each other'):
+                archive.configure(outer_base, migrate_existing=True)
+            self.assertEqual(archive.load_config(), first)
+
     def test_cleanup_failure_keeps_new_complete_archive_active(self):
         config = self.root / 'settings' / 'archive-config.json'
         first_base = self.root / 'first'
