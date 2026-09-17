@@ -71,13 +71,28 @@ def validate_history_boundary(path, end_ordinal, end_offset):
     if len(prefix) != end_offset or not prefix.endswith(b'\n'):
         return False
     lines = prefix.splitlines()
-    if len(lines) != end_ordinal:
+    if not lines:
         return False
     try:
-        last = json.loads(lines[-1].decode('utf-8'))
+        parsed = [json.loads(line.decode('utf-8')) for line in lines]
     except (ValueError, UnicodeError):
         return False
-    return last.get('ordinal') == end_ordinal - 1
+    first_ordinal = parsed[0].get('ordinal')
+    if not isinstance(first_ordinal, int) or first_ordinal < 0:
+        return False
+    expected = list(range(first_ordinal, end_ordinal))
+    return [row.get('ordinal') for row in parsed] == expected
+
+
+def source_thread_id(path):
+    identifiers = re.findall(
+        r'(?<![0-9a-f])[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?![0-9a-f])',
+        path.stem,
+        re.IGNORECASE,
+    )
+    if not identifiers:
+        raise ArchiveError(f'Source filename has no thread ID: {path.name}')
+    return identifiers[-1].lower()
 
 
 def locate_source(session_id, home):
@@ -93,16 +108,24 @@ def locate_source(session_id, home):
     if len(sources) == 1:
         return sources[0]
 
+    source_ids = {path: source_thread_id(path) for path in sources}
+
     parents = {}
     for child, meta in metadata.items():
         base = meta['payload'].get('history_base')
         if base is None:
             continue
-        if not isinstance(base, dict) or base.get('thread_id') != session_id:
+        if not isinstance(base, dict):
             raise ArchiveError('Invalid history_base metadata')
+        parent_thread_id = base.get('thread_id')
+        try:
+            parent_thread_id = str(uuid.UUID(parent_thread_id))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ArchiveError('Invalid history_base metadata') from exc
         end_ordinal = base.get('end_ordinal_exclusive')
         end_offset = base.get('end_byte_offset')
-        matches = [path for path in sources if path != child
+        matches = [path for path in sources
+                   if path != child and source_ids[path] == parent_thread_id
                    and validate_history_boundary(path, end_ordinal, end_offset)]
         if len(matches) != 1:
             raise ArchiveError('History base does not resolve to exactly one source')

@@ -50,6 +50,41 @@ console.log(JSON.stringify({{
             "6a9a7f35-e334-83e8-a4cf-d938573b1910",
         )
 
+    def test_chatgpt_adapter_exposes_optional_artifact_capture(self):
+        adapter = EXTENSION / "providers" / "chatgpt.js"
+        script = f"""
+global.self = globalThis;
+require({json.dumps(str(adapter))});
+const provider = self.YaloNoteProviders[0];
+console.log(JSON.stringify({{
+  inspectPage: typeof provider.inspectPage,
+  captureArtifact: typeof provider.captureArtifact,
+}}));
+"""
+        result = subprocess.run(
+            ["node", "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        contract = json.loads(result.stdout)
+        self.assertEqual(contract["inspectPage"], "function")
+        self.assertEqual(contract["captureArtifact"], "function")
+
+    def test_manifest_version_matches_documented_release(self):
+        manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
+        readme = (EXTENSION / "README.md").read_text(encoding="utf-8")
+
+        self.assertEqual(manifest["version"], "0.9.1")
+        self.assertIn("当前版本：**0.9.1**", readme)
+
+    def test_record_button_can_restore_saved_directory_permission(self):
+        popup = (EXTENSION / "popup.js").read_text(encoding="utf-8")
+
+        self.assertIn('handle.queryPermission({ mode: "readwrite" })', popup)
+        self.assertIn('handle.requestPermission({ mode: "readwrite" })', popup)
+        self.assertIn("目录句柄仍已保留", popup)
+
 
 if __name__ == "__main__":
     unittest.main()

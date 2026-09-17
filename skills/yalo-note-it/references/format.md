@@ -5,7 +5,7 @@
 Yalo note it has two source adapters:
 
 - Codex Desktop preserves verified visible rollout records byte-for-byte as `session.jsonl`.
-- ChatGPT Web reads rendered conversation-turn nodes after scrolling the conversation from a stable top to the bottom. It writes `<archive-root>/sessions/chatgpt/<conversation-id>/conversation.raw-record.md` with the source URL, page title, export time, message count, cutoff ID, role, turn ID, rendered Markdown, and attachment names.
+- ChatGPT Web reads rendered conversation-turn nodes after scrolling the conversation from a stable top to the bottom. It writes `<archive-root>/sessions/chatgpt/<conversation-id>/conversation.raw-record.md` with the source URL, page title, export time, message count, cutoff ID, role, turn ID, rendered Markdown, and attachment names. It also writes `manifest.json` and saves user-uploaded files whose current ChatGPT download entry remains available into `assets/`.
 
 The Web adapter starts only when the user clicks the browser extension's “Yalo note it” button. It keys messages by `data-testid="conversation-turn-*"`, removes overlap by turn ID, and sorts by the numeric turn suffix. Web-page message text never triggers recording. The export records the complete conversation state available when scanning begins.
 

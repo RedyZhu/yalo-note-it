@@ -125,8 +125,26 @@ function inspectChatGptPage(targetPosition) {
       attachments: [...new Set(attachments)],
     };
   });
+  const artifacts = [];
+  for (const turn of turns) {
+    const content = turn.querySelector("[data-message-author-role]") ?? turn;
+    if (content.getAttribute("data-message-author-role") !== "user") continue;
+    const messageId = turn.getAttribute("data-testid") ?? "";
+    const cards = [...turn.querySelectorAll("[role='group'][aria-label]")]
+      .filter((card) => card.querySelector("[data-testid='library-file-icon']"));
+    cards.forEach((card, index) => {
+      const displayName = cleanText(card.getAttribute("aria-label"));
+      if (!displayName) return;
+      artifacts.push({
+        key: `${messageId}::${index}::${displayName}`,
+        messageId,
+        displayName,
+      });
+    });
+  }
   return {
     records,
+    artifacts,
     scrollTop: scroller.scrollTop,
     scrollHeight: scroller.scrollHeight,
     viewport: scroller.clientHeight,
@@ -134,6 +152,107 @@ function inspectChatGptPage(targetPosition) {
     title: document.title,
     url: location.href,
   };
+}
+
+async function captureChatGptArtifact(artifactKey) {
+  const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+  const parts = String(artifactKey).split("::");
+  const messageId = parts.shift() ?? "";
+  const cardIndex = Number(parts.shift() ?? 0);
+  const displayName = parts.join("::");
+  const turn = [...document.querySelectorAll("main [data-testid^='conversation-turn-']")]
+    .find((candidate) => candidate.getAttribute("data-testid") === messageId);
+  const cards = turn
+    ? [...turn.querySelectorAll("[role='group'][aria-label]")]
+      .filter((card) => card.querySelector("[data-testid='library-file-icon']"))
+    : [];
+  const card = cards[cardIndex];
+  if (!card || card.getAttribute("aria-label") !== displayName) {
+    return { key: artifactKey, messageId, displayName, status: "unavailable", error: "上传文件卡已不在页面中。" };
+  }
+
+  const findDownloadButton = () => [...document.querySelectorAll("button")].find((button) => {
+    const label = button.getAttribute("aria-label") ?? button.textContent ?? "";
+    return /^(下载|download)$/iu.test(label.trim());
+  });
+  const findCloseButton = () => [...document.querySelectorAll("button")].find((button) => {
+    const label = button.getAttribute("aria-label") ?? button.textContent ?? "";
+    return /^(关闭|close)$/iu.test(label.trim());
+  });
+
+  try {
+    card.scrollIntoView({ block: "center", behavior: "instant" });
+    (card.querySelector("button") ?? card).click();
+    let downloadButton = null;
+    for (let attempt = 0; attempt < 50 && !downloadButton; attempt += 1) {
+      await wait(100);
+      downloadButton = findDownloadButton();
+    }
+    if (!downloadButton) throw new Error("文件预览没有提供下载按钮。");
+
+    const originalCreateObjectURL = URL.createObjectURL;
+    const anchorPrototype = HTMLAnchorElement.prototype;
+    const originalAnchorClick = anchorPrototype.click;
+    let resolvePayload;
+    const payloadPromise = new Promise((resolve) => { resolvePayload = resolve; });
+    const readBlob = async (blob, sourceUrl = null) => {
+      if (blob.size > 25 * 1024 * 1024) {
+        resolvePayload({ status: "too_large", size: blob.size, sourceUrl, error: "文件超过 25 MB 的插件保存上限。" });
+        return;
+      }
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      }
+      resolvePayload({
+        status: "saved",
+        size: blob.size,
+        mimeType: blob.type || "application/octet-stream",
+        sourceUrl,
+        base64: btoa(binary),
+      });
+    };
+    URL.createObjectURL = (object) => {
+      if (object instanceof Blob) void readBlob(object);
+      return originalCreateObjectURL.call(URL, object);
+    };
+    anchorPrototype.click = function interceptedClick() {
+      const href = this.href;
+      if (href && !href.startsWith("blob:")) {
+        void fetch(href, { credentials: "include" })
+          .then((response) => {
+            if (!response.ok) throw new Error(`下载请求失败：HTTP ${response.status}`);
+            return response.blob();
+          })
+          .then((blob) => readBlob(blob, href))
+          .catch((error) => resolvePayload({ status: "unavailable", sourceUrl: href, error: String(error.message ?? error) }));
+      }
+      return undefined;
+    };
+
+    try {
+      downloadButton.click();
+      const payload = await Promise.race([
+        payloadPromise,
+        wait(15000).then(() => ({ status: "unavailable", error: "等待文件下载超时。" })),
+      ]);
+      return { key: artifactKey, messageId, displayName, ...payload };
+    } finally {
+      URL.createObjectURL = originalCreateObjectURL;
+      anchorPrototype.click = originalAnchorClick;
+      findCloseButton()?.click();
+    }
+  } catch (error) {
+    findCloseButton()?.click();
+    return {
+      key: artifactKey,
+      messageId,
+      displayName,
+      status: "unavailable",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 self.YaloNoteProviders = [
@@ -144,5 +263,6 @@ self.YaloNoteProviders = [
     matchesUrl: (url) => /^https:\/\/(chatgpt\.com|chat\.openai\.com)\//u.test(url || ""),
     conversationId: (url) => url.match(/\/c\/([0-9a-f-]+)/iu)?.[1] ?? null,
     inspectPage: inspectChatGptPage,
+    captureArtifact: captureChatGptArtifact,
   },
 ];

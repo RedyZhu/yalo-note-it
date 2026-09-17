@@ -7,12 +7,14 @@ class ArchiveError(Exception):
     pass
 
 
-EXCLUDED_TOP = {'world_state', 'turn_context', 'token_usage_record'}
+EXCLUDED_TOP = {'world_state', 'turn_context', 'token_usage_record', 'compacted'}
 EXCLUDED_EVENTS = {'task_started', 'task_complete', 'thread_settings_applied',
-                   'token_count', 'item_completed'}
+                   'token_count', 'item_completed', 'turn_aborted'}
 INTERNAL_USER_KINDS = {'plugins.recommendations', 'agents_md.instructions',
                        'environments.environment_context'}
 VISIBLE_USER_KINDS = {'user.text', 'user.image'}
+REALTIME_SESSION_EVENTS = {'realtime_session_started', 'realtime_session_closed'}
+REALTIME_RESPONSE_PREFIXES = ('[STATUS] ', '[COMMENTARY] ', '[COMPLETE] ', '[ANALYSIS] ')
 TRIGGERS = (
     re.compile(r'亚楼.*?记一下', re.DOTALL),
     re.compile(r'\byalo\b.*?\bnote\s+it\b', re.DOTALL | re.IGNORECASE),
@@ -67,15 +69,27 @@ def validate_content(content):
             raise ArchiveError('Unsupported content type: ' + str(kind))
 
 
+def text_content(payload):
+    content = payload.get('content')
+    if not isinstance(content, list) or any(block.get('type') not in {'input_text', 'output_text'}
+                                            for block in content if isinstance(block, dict)):
+        return None
+    if not all(isinstance(block, dict) and isinstance(block.get('text'), str) for block in content):
+        return None
+    return ''.join(block['text'] for block in content)
+
+
+def realtime_delegation_wrapper(payload):
+    text = text_content(payload)
+    return bool(text and re.fullmatch(r'\s*<realtime_delegation>[\s\S]*</realtime_delegation>\s*', text))
+
+
 def validate_function_output(output):
     if isinstance(output, str):
         return
-    if not isinstance(output, list) or not output:
-        raise ArchiveError('Unsupported function output')
-    for block in output:
-        require(block, ['type', 'text'])
-        if block['type'] != 'input_text' or not isinstance(block['text'], str):
-            raise ArchiveError('Unsupported function output content')
+    validate_content(output)
+    if any(block['type'] not in {'input_text', 'input_image'} for block in output):
+        raise ArchiveError('Unsupported function output content')
 
 
 def keep_record(record, keep_meta=False):
@@ -88,6 +102,16 @@ def keep_record(record, keep_meta=False):
         return keep_meta
     if kind in EXCLUDED_TOP:
         return False
+    if kind == 'realtime_item':
+        item = payload.get('type')
+        if item in REALTIME_SESSION_EVENTS:
+            return False
+        if item != 'transcript_segment':
+            raise ArchiveError('Unknown realtime item: ' + str(item))
+        require(payload, ['id', 'realtime_session_id', 'role', 'text'])
+        if payload['role'] not in {'user', 'assistant'} or not isinstance(payload['text'], str):
+            raise ArchiveError('Unsupported realtime transcript segment')
+        return True
     if kind == 'event_msg':
         if payload.get('type') not in EXCLUDED_EVENTS:
             raise ArchiveError('Unknown event: ' + str(payload.get('type')))
@@ -103,11 +127,16 @@ def keep_record(record, keep_meta=False):
         if role in {'system', 'developer'}:
             return False
         if role == 'user':
+            if realtime_delegation_wrapper(payload):
+                return False
             if not visible_user(payload):
                 return False
         elif role == 'assistant':
             phase = payload.get('phase', payload.get('channel'))
             if phase in {'analysis', 'reasoning'}:
+                return False
+            text = text_content(payload)
+            if phase is None and text and text.startswith(REALTIME_RESPONSE_PREFIXES):
                 return False
             if phase not in {'commentary', 'final', 'final_answer'}:
                 raise ArchiveError('Unknown assistant visibility: ' + str(phase))

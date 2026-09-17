@@ -85,6 +85,19 @@ async function control(mode) {
 
   statusElement.textContent = mode === "record" ? "正在读取对话，请保持此窗口打开…" : "正在停止…";
   try {
+    if (mode === "record") {
+      const handle = await readArchiveRoot();
+      if (!handle) throw new Error("尚未设置目录，请先选择 D:\\MyData\\yalo-note。");
+      let permission = await handle.queryPermission({ mode: "readwrite" });
+      if (permission !== "granted") {
+        statusElement.textContent = "请允许继续访问已保存的记录目录…";
+        permission = await handle.requestPermission({ mode: "readwrite" });
+      }
+      if (permission !== "granted") {
+        throw new Error("没有取得记录目录的写权限；目录句柄仍已保留，可再次点击 Yalo note it 授权。" );
+      }
+      statusElement.textContent = "正在读取对话，请保持此窗口打开…";
+    }
     const response = await chrome.runtime.sendMessage({
       type: "record-control",
       mode,
@@ -126,6 +139,6 @@ readArchiveRoot()
     const permission = await handle.queryPermission({ mode: "readwrite" });
     statusElement.textContent = permission === "granted"
       ? `当前记录目录：${handle.name}`
-      : `已保存目录 ${handle.name}，但缺少写权限，请重新设置。`;
+      : `已保存目录 ${handle.name}；点击 Yalo note it 时会请求恢复写权限。`;
   })
   .catch((error) => { statusElement.textContent = error?.message ?? "无法读取目录设置。"; });

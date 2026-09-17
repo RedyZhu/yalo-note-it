@@ -14,6 +14,8 @@ from codex_format import ArchiveError, is_trigger, keep_record
 from session_assets import plan_assets
 
 SID = '11111111-1111-4111-8111-111111111111'
+CHILD_SID = '22222222-2222-4222-8222-222222222222'
+GRANDCHILD_SID = '33333333-3333-4333-8333-333333333333'
 STAMP = '2026-09-10T10:00:00.123Z'
 
 
@@ -101,7 +103,7 @@ class ArchiveTests(unittest.TestCase):
         ]
         parent_data = b''.join(map(raw, parent_rows))
         self.source.write_bytes(parent_data + raw({**message('abandoned', 'old'), 'ordinal': 2}))
-        child = self.source.with_name('branch-' + SID + '-child.jsonl')
+        child = self.source.with_name('branch-' + SID + '_' + CHILD_SID + '.jsonl')
         child_rows = [
             {**record('session_meta', {
                 'session_id': SID,
@@ -125,6 +127,59 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual([segment.path for segment in source.segments], [self.source, child])
         self.assertEqual(result['message_id'], 'branch-request')
         self.assertEqual([row['payload'].get('id') for _, row in selected], ['first', 'branch-request'])
+
+    def test_multi_hop_history_uses_parent_rollout_thread_id(self):
+        parent_rows = [
+            {**record('session_meta', {'session_id': SID, 'id': SID}), 'ordinal': 0},
+            {**message('hello', 'first'), 'ordinal': 1},
+        ]
+        parent_data = b''.join(map(raw, parent_rows))
+        self.source.write_bytes(parent_data)
+        child = self.source.with_name('branch-' + SID + '_' + CHILD_SID + '.jsonl')
+        child_rows = [
+            {**record('session_meta', {
+                'session_id': SID,
+                'id': SID,
+                'history_base': {
+                    'thread_id': SID,
+                    'end_ordinal_exclusive': 2,
+                    'end_byte_offset': len(parent_data),
+                },
+            }), 'ordinal': 2},
+            {**message('middle', 'middle'), 'ordinal': 3},
+        ]
+        child_data = b''.join(map(raw, child_rows))
+        child.write_bytes(child_data)
+        grandchild = self.source.with_name('branch-' + SID + '_' + GRANDCHILD_SID + '.jsonl')
+        grandchild_rows = [
+            {**record('session_meta', {
+                'session_id': SID,
+                'id': SID,
+                'history_base': {
+                    'thread_id': CHILD_SID,
+                    'end_ordinal_exclusive': 4,
+                    'end_byte_offset': len(child_data),
+                },
+            }), 'ordinal': 4},
+            {**message('yalo note it', 'branch-request'), 'ordinal': 5},
+        ]
+        grandchild.write_bytes(b''.join(map(raw, grandchild_rows)))
+
+        source = archive.locate_source(SID, self.home)
+        selected, _ = archive.prepare(
+            source,
+            'branch-request',
+            archive.digest(raw(grandchild_rows[-1])),
+        )
+
+        self.assertEqual(
+            [segment.path for segment in source.segments],
+            [self.source, child, grandchild],
+        )
+        self.assertEqual(
+            [row['payload'].get('id') for _, row in selected],
+            ['first', 'middle', 'branch-request'],
+        )
 
     def test_history_branch_rejects_unverified_boundary(self):
         parent_rows = [
@@ -190,6 +245,32 @@ class ArchiveTests(unittest.TestCase):
     def test_analysis_and_metadata_excluded(self):
         self.assertFalse(keep_record(self.rows[0]))
         self.assertFalse(keep_record(message('hidden', role='assistant', phase='analysis')))
+        self.assertFalse(keep_record(record('compacted', {
+            'message': 'internal summary',
+            'replacement_history': [],
+        })))
+
+    def test_realtime_transcript_kept_without_transport_duplicates(self):
+        transcript = record('realtime_item', {
+            'id': 'voice-user',
+            'realtime_session_id': 'voice-session',
+            'type': 'transcript_segment',
+            'role': 'user',
+            'text': 'spoken request',
+        })
+        self.assertTrue(keep_record(transcript))
+        self.assertFalse(keep_record(record('realtime_item', {
+            'id': 'voice-start',
+            'realtime_session_id': 'voice-session',
+            'type': 'realtime_session_started',
+        })))
+        wrapper = message(
+            '<realtime_delegation><input>spoken request</input></realtime_delegation>',
+            'voice-wrapper',
+        )
+        self.assertFalse(keep_record(wrapper))
+        response = message('[STATUS] working', 'voice-response', role='assistant')
+        self.assertFalse(keep_record(response))
 
     def test_function_calls_and_outputs_preserved(self):
         call = record('response_item', {'type': 'function_call', 'id': 'f', 'call_id': 'fc',
@@ -200,7 +281,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertTrue(keep_record(output))
         output['payload']['output'] = [
             {'type': 'input_text', 'text': 'first block'},
-            {'type': 'input_text', 'text': 'second block'},
+            {'type': 'input_image', 'image_url': 'data:image/png;base64,AA=='},
         ]
         self.assertTrue(keep_record(output))
         output['payload']['output'] = [{'type': 'output_text', 'text': 'unverified shape'}]

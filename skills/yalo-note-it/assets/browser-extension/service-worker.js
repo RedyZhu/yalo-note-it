@@ -31,6 +31,16 @@ async function inspectRecordPage(tabId, provider, moveTo) {
   return result;
 }
 
+async function captureArtifact(tabId, provider, artifactKey) {
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    args: [artifactKey],
+    func: provider.captureArtifact,
+  });
+  return result;
+}
+
 async function loadArchiveRoot() {
   const database = await new Promise((resolve, reject) => {
     const request = indexedDB.open("yalo-note-it", 1);
@@ -50,7 +60,35 @@ async function loadArchiveRoot() {
   }
 }
 
-async function writeWebRecord(providerId, conversationId, body) {
+function safeFileName(displayName, fallback = "attachment") {
+  const cleaned = String(displayName ?? "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/gu, "_")
+    .replace(/[. ]+$/gu, "")
+    .trim();
+  return cleaned && cleaned !== "." && cleaned !== ".." ? cleaned : fallback;
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+async function sha256(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function writeFile(directory, name, contents) {
+  const file = await directory.getFileHandle(name, { create: true });
+  const writable = await file.createWritable();
+  try {
+    await writable.write(contents);
+  } finally {
+    await writable.close();
+  }
+}
+
+async function writeWebArchive(providerId, conversationId, body, artifacts, sourceUrl) {
   const root = await loadArchiveRoot();
   if (!root) throw new Error("请先在插件中把记录目录设置为 D:\\MyData\\yalo-note。" );
   if ((await root.queryPermission({ mode: "readwrite" })) !== "granted") {
@@ -60,19 +98,59 @@ async function writeWebRecord(providerId, conversationId, body) {
   for (const name of ["sessions", providerId, conversationId]) {
     directory = await directory.getDirectoryHandle(name, { create: true });
   }
-  const file = await directory.getFileHandle("conversation.raw-record.md", { create: true });
-  const writable = await file.createWritable();
-  try {
-    await writable.write(body);
-  } finally {
-    await writable.close();
+  await writeFile(directory, "conversation.raw-record.md", body);
+  const assetsDirectory = await directory.getDirectoryHandle("assets", { create: true });
+  const usedNames = new Set();
+  const manifestArtifacts = [];
+  for (const artifact of artifacts.values()) {
+    const entry = {
+      key: artifact.key,
+      messageId: artifact.messageId,
+      displayName: artifact.displayName,
+      status: artifact.status,
+      capturedAt: artifact.capturedAt,
+    };
+    if (artifact.sourceUrl) entry.sourceUrl = artifact.sourceUrl;
+    if (artifact.error) entry.error = artifact.error;
+    if (artifact.status === "saved" && artifact.base64) {
+      const bytes = base64ToBytes(artifact.base64);
+      const baseName = safeFileName(artifact.displayName);
+      let localName = baseName;
+      let suffix = 2;
+      while (usedNames.has(localName.toLocaleLowerCase())) {
+        const dot = baseName.lastIndexOf(".");
+        localName = dot > 0
+          ? `${baseName.slice(0, dot)}-${suffix}${baseName.slice(dot)}`
+          : `${baseName}-${suffix}`;
+        suffix += 1;
+      }
+      usedNames.add(localName.toLocaleLowerCase());
+      await writeFile(assetsDirectory, localName, bytes);
+      entry.localPath = `assets/${localName}`;
+      entry.mimeType = artifact.mimeType;
+      entry.size = bytes.byteLength;
+      entry.sha256 = await sha256(bytes);
+    } else if (Number.isFinite(artifact.size)) {
+      entry.size = artifact.size;
+    }
+    manifestArtifacts.push(entry);
   }
+  const manifest = {
+    schemaVersion: 1,
+    provider: providerId,
+    conversationId,
+    sourceUrl,
+    exportedAt: new Date().toISOString(),
+    artifacts: manifestArtifacts,
+  };
+  await writeFile(directory, "manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
 async function runRecordExport(tab, provider, cutoffId = null) {
   const run = { tabId: tab.id, stopped: false, startedAt: new Date().toISOString() };
   activeRun = run;
   const records = new Map();
+  const artifacts = new Map();
   try {
     await setBadge(tab.id, "REC", "#7c3aed");
     let state = await inspectRecordPage(tab.id, provider, "top");
@@ -93,6 +171,17 @@ async function runRecordExport(tab, provider, cutoffId = null) {
     let stableBottom = 0;
     for (let step = 0; step < MAX_RECORD_STEPS && !run.stopped; step += 1) {
       for (const record of state.records) records.set(record.id, record);
+      if (provider.captureArtifact) {
+        for (const candidate of state.artifacts ?? []) {
+          if (artifacts.has(candidate.key)) continue;
+          const captured = await captureArtifact(tab.id, provider, candidate.key);
+          artifacts.set(candidate.key, {
+            ...candidate,
+            ...captured,
+            capturedAt: new Date().toISOString(),
+          });
+        }
+      }
       stableBottom = state.atBottom ? stableBottom + 1 : 0;
       if (stableBottom >= 3) break;
       state = await inspectRecordPage(tab.id, provider, "next");
@@ -131,9 +220,14 @@ async function runRecordExport(tab, provider, cutoffId = null) {
       lines.push(record.markdown || "[无法辨认]", "");
     }
     const body = lines.join("\n");
-    await writeWebRecord(provider.id, conversationId, body);
+    await writeWebArchive(provider.id, conversationId, body, artifacts, state.url);
     await setBadge(tab.id, ordered.length ? "OK" : "ERR", ordered.length ? "#16a34a" : "#dc2626");
-    return { ok: true, message: `已记录 ${ordered.length} 条消息。` };
+    const savedArtifacts = [...artifacts.values()].filter((artifact) => artifact.status === "saved").length;
+    const failedArtifacts = artifacts.size - savedArtifacts;
+    const artifactSummary = artifacts.size
+      ? `，保存 ${savedArtifacts} 个文件${failedArtifacts ? `，${failedArtifacts} 个不可用` : ""}`
+      : "";
+    return { ok: true, message: `已记录 ${ordered.length} 条消息${artifactSummary}。` };
   } catch (error) {
     console.error("Raw Record export failed", error);
     await setBadge(tab.id, "ERR", "#dc2626");
