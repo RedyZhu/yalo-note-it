@@ -194,24 +194,7 @@ async function configureRoot() {
   }
 }
 
-async function openArchiveRoot() {
-  try {
-    const handle = await readArchiveRoot();
-    if (!handle) throw new Error("尚未设置目录，请先设置本地记录目录。");
-    let permission = await handle.queryPermission({ mode: "read" });
-    if (permission !== "granted") permission = await handle.requestPermission({ mode: "read" });
-    if (permission !== "granted") throw new Error("浏览器未授予记录目录的读取权限。");
-    await window.showDirectoryPicker({ id: "yalo-note-open", mode: "read", startIn: handle });
-    statusElement.textContent = `已打开记录目录：${handle.name}`;
-  } catch (error) {
-    if (error?.name !== "AbortError") {
-      statusElement.textContent = error?.message ?? "无法打开记录目录。";
-    }
-  }
-}
-
 document.querySelector("#configure").addEventListener("click", configureRoot);
-document.querySelector("#open-directory").addEventListener("click", openArchiveRoot);
 document.querySelector("#record").addEventListener("click", () => control("record"));
 document.querySelector("#stop").addEventListener("click", () => control("stop"));
 

@@ -149,8 +149,8 @@ console.log(JSON.stringify(result.records));
         manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
         readme = (EXTENSION / "README.md").read_text(encoding="utf-8")
 
-        self.assertEqual(manifest["version"], "0.12.0")
-        self.assertIn("当前版本：**0.12.0**", readme)
+        self.assertEqual(manifest["version"], "0.12.1")
+        self.assertIn("当前版本：**0.12.1**", readme)
 
     def test_record_button_can_restore_saved_directory_permission(self):
         popup = (EXTENSION / "popup.js").read_text(encoding="utf-8")
@@ -182,18 +182,16 @@ console.log(JSON.stringify(result.records));
         )
         self.assertNotIn('D:\\\\MyData\\\\yalo-note', popup)
 
-    def test_directory_actions_are_compact_and_open_uses_saved_handle(self):
+    def test_directory_action_is_compact_and_has_no_fake_open_button(self):
         html = (EXTENSION / "popup.html").read_text(encoding="utf-8")
         popup = (EXTENSION / "popup.js").read_text(encoding="utf-8")
 
         self.assertGreater(html.index('id="status"'), html.index('id="stop"'))
         self.assertGreater(html.index('id="configure"'), html.index('id="status"'))
         self.assertIn('class="directory-actions"', html)
-        self.assertIn('id="open-directory"', html)
-        self.assertIn('const handle = await readArchiveRoot()', popup)
-        self.assertIn('startIn: handle', popup)
-        self.assertIn('mode: "read"', popup)
-        self.assertIn('querySelector("#open-directory")', popup)
+        self.assertNotIn('id="open-directory"', html)
+        self.assertNotIn('openArchiveRoot', popup)
+        self.assertNotIn('yalo-note-open', popup)
         self.assertIn('可直接选择它正在使用的“YaloNote”文件夹', html)
 
 
