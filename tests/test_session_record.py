@@ -378,6 +378,30 @@ class ArchiveTests(unittest.TestCase):
             with self.assertRaises(ArchiveError):
                 archive.load_config()
 
+    def test_existing_legacy_archive_name_remains_configured(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        legacy = self.root / 'yalo-note'
+        legacy.mkdir()
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({'archive_root': str(legacy)}), encoding='utf-8')
+
+        with patch.object(archive, 'config_path', return_value=config):
+            self.assertEqual(archive.load_config(), legacy)
+
+    def test_configuration_can_recover_from_unavailable_old_directory(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        missing = self.root / 'missing-old-root'
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({'archive_root': str(missing)}), encoding='utf-8')
+        new_base = self.root / 'new-base'
+
+        with patch.object(archive, 'config_path', return_value=config):
+            with self.assertRaisesRegex(ArchiveError, 'unavailable'):
+                archive.load_config()
+            root = archive.configure(new_base, migrate_existing=False)
+            self.assertEqual(root, new_base / archive.ARCHIVE_FOLDER_NAME)
+            self.assertEqual(archive.load_config(), root)
+
     def test_path_change_requires_choice_and_can_keep_old_archive(self):
         config = self.root / 'settings' / 'archive-config.json'
         first_base = self.root / 'first'
@@ -446,7 +470,7 @@ class ArchiveTests(unittest.TestCase):
         base = self.root / 'selected'
         with patch.object(archive, 'config_path', return_value=config):
             root = archive.configure(base)
-        self.assertEqual(root, base / 'yalo note')
+        self.assertEqual(root, base / 'YaloNote')
         self.assertTrue(root.is_dir())
 
     def test_temporary_attachment_and_name_collision(self):

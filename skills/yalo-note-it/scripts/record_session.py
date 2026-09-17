@@ -14,7 +14,7 @@ import uuid
 from codex_format import ArchiveError, is_trigger, keep_record, timestamp, user_text
 
 
-ARCHIVE_FOLDER_NAME = 'yalo note'
+ARCHIVE_FOLDER_NAME = 'YaloNote'
 
 
 @dataclass(frozen=True)
@@ -265,7 +265,7 @@ def config_path():
     return Path.home() / '.ai-native-brand' / 'archive-config.json'
 
 
-def load_config():
+def load_config(require_available=True):
     path = config_path()
     if not path.exists():
         return None
@@ -274,7 +274,9 @@ def load_config():
         root = Path(cfg['archive_root'])
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ArchiveError('Invalid archive configuration; no default fallback') from exc
-    if not root.is_absolute() or not root.is_dir():
+    if not root.is_absolute():
+        raise ArchiveError('Invalid archive configuration; no default fallback')
+    if require_available and not root.is_dir():
         raise ArchiveError('Configured archive directory unavailable; no default fallback')
     return root.resolve()
 
@@ -329,7 +331,7 @@ def configure(base, migrate_existing=None):
     root = base / ARCHIVE_FOLDER_NAME
     if root == codex_home() or codex_home() in root.parents:
         raise ArchiveError('Archive destination must be outside Codex source storage')
-    existing = load_config()
+    existing = load_config(require_available=False)
     if existing is not None and existing != root and migrate_existing is None:
         raise ArchiveError('Archive path change requires an explicit migrate-or-keep choice')
     if existing is not None and existing != root and (existing in root.parents or root in existing.parents):

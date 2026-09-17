@@ -1,5 +1,6 @@
 const statusElement = document.querySelector("#status");
-const ARCHIVE_FOLDER_NAME = "yalo note";
+const ARCHIVE_FOLDER_NAME = "YaloNote";
+const RECOGNIZED_ARCHIVE_FOLDER_NAMES = new Set(["yalonote", "yalo note", "yalo-note"]);
 
 async function openSettingsDatabase() {
   return new Promise((resolve, reject) => {
@@ -163,7 +164,7 @@ async function configureRoot() {
   try {
     const previous = await readArchiveRoot();
     const base = await window.showDirectoryPicker({ id: "yalo-note-base", mode: "readwrite" });
-    const handle = base.name.toLocaleLowerCase() === ARCHIVE_FOLDER_NAME
+    const handle = RECOGNIZED_ARCHIVE_FOLDER_NAMES.has(base.name.toLocaleLowerCase())
       ? base
       : await base.getDirectoryHandle(ARCHIVE_FOLDER_NAME, { create: true });
     statusElement.textContent = "正在验证目录读写权限…";

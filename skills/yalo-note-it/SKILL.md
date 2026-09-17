@@ -25,7 +25,7 @@ description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文�
 1. 运行 `probe`，只读定位当前 Session 与最近一条可见用户消息。确认返回 `text` 就是本次口令或明确归档确认；不匹配则停止，不挑选历史口令替代当前请求。记录返回的 `message_id` 和 `sha256` 作为此次截止点。
 2. 运行 `check --message-id ID --sha256 HASH`，校验当前来源与附件，无归档副作用。仅对于 `$` 入口经用户明确确认的请求添加 `--confirmed`；它不能用于绕过固定口令。首次配置等待后仍使用原截止点，不重新选最近消息。
 3. 运行 `status`。未配置时，按下节请求用户输入明确的绝对本地路径；已配置直接继续。路径失效时报错，不提供或回退到默认路径。
-4. 首次路径明确确认后执行 `configure --root ABSOLUTE_BASE_PATH --user-confirmed`。脚本在该路径下创建固定的 `yalo note` 子目录，验证写入权限并原子保存实际归档根目录。
+4. 首次路径明确确认后执行 `configure --root ABSOLUTE_BASE_PATH --user-confirmed`。脚本在该路径下创建固定的 `YaloNote` 子目录，验证写入权限并原子保存实际归档根目录。
 5. 用户主动更改路径时，先询问“是否把原有内容全部迁移到新路径？”。确认迁移后执行 `configure --root ABSOLUTE_BASE_PATH --user-confirmed --migrate-existing`；选择保留旧内容时执行同一命令并添加 `--keep-existing`。未取得明确选择时不得切换配置。迁移成功后删除旧归档目录；选择保留时旧目录不变。
 6. 执行 `archive --message-id ID --sha256 HASH`，必要时沿用第 2 步的 `--confirmed`。成功后简短回复“当前会话已归档”并给出返回文件链接；失败说明具体原因，不声称已成功或完整保存。
 
@@ -42,7 +42,7 @@ description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文�
 ```text
 Yalo note it 尚未配置。
 请创建或选择一个本地位置，并把它的完整绝对路径粘贴给我。
-我会在该路径下创建“yalo note”文件夹保存记录；本工具不提供默认路径。
+我会在该路径下创建“YaloNote”文件夹保存记录；本工具不提供默认路径。
 档案可能包含对话和工具结果中的凭证、私有代码及个人信息；只保存在你确认的本地位置，不自动脱敏或上传。
 ```
 
@@ -53,11 +53,11 @@ Yalo note it 尚未配置。
 这是你给 AI 的收尾信号：我会将当前会话保存到这句话为止；它不代表你认可了所有答案，也不代表问题已经解决。
 ```
 
-只在用户明确提供路径后创建或验证 `<用户路径>/yalo note`，并写入 `%USERPROFILE%\.ai-native-brand\archive-config.json`。配置仅包含实际 `archive_root`，升级安装不覆盖配置。以后更改路径时必须询问是否迁移旧内容，不能静默移动、删除或遗留而不说明。
+只在用户明确提供路径后创建或验证 `<用户路径>/YaloNote`，并写入 `%USERPROFILE%\.ai-native-brand\archive-config.json`。配置仅包含实际 `archive_root`，升级安装不覆盖配置；已配置的旧名称 `yalo note` 或 `yalo-note` 保持有效，不自动改名或移动。以后更改路径时必须询问是否迁移旧内容，不能静默移动、删除或遗留而不说明。
 
 ## 文件与格式边界
 
-用户提供 `<base-path>` 后，实际 `<archive-root>` 固定为 `<base-path>/yalo note`。Codex 输出为 `<archive-root>/sessions/codex/<YYYY-MM>/<session-id>/session.jsonl`；年月取来源 Session 开始时间，不重新生成时间。不存在默认路径。重复调用更新同一文件；失败不得冒充成功。
+用户提供 `<base-path>` 后，新配置的实际 `<archive-root>` 固定为 `<base-path>/YaloNote`。Codex 输出为 `<archive-root>/sessions/codex/<YYYY-MM>/<session-id>/session.jsonl`；年月取来源 Session 开始时间，不重新生成时间。不存在默认路径。已有配置继续使用其记录的绝对路径。重复调用更新同一文件；失败不得冒充成功。
 
 适配的是已实测的 Codex 桌面 rollout 结构。`session_meta` 只用于身份校验，因其内嵌基础指令，整行不保存。所有保留行的字节、字段、顺序、时间原样保留。内部 `user` 消息按 provenance 排除；未知或混合来源、未知可见性、未知记录类型均显式失败，不语义猜测。
 

@@ -149,8 +149,8 @@ console.log(JSON.stringify(result.records));
         manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
         readme = (EXTENSION / "README.md").read_text(encoding="utf-8")
 
-        self.assertEqual(manifest["version"], "0.11.2")
-        self.assertIn("当前版本：**0.11.2**", readme)
+        self.assertEqual(manifest["version"], "0.12.0")
+        self.assertIn("当前版本：**0.12.0**", readme)
 
     def test_record_button_can_restore_saved_directory_permission(self):
         popup = (EXTENSION / "popup.js").read_text(encoding="utf-8")
@@ -167,9 +167,10 @@ console.log(JSON.stringify(result.records));
     def test_configuration_creates_named_child_and_prompts_before_migration(self):
         popup = (EXTENSION / "popup.js").read_text(encoding="utf-8")
 
-        self.assertIn('const ARCHIVE_FOLDER_NAME = "yalo note"', popup)
+        self.assertIn('const ARCHIVE_FOLDER_NAME = "YaloNote"', popup)
+        self.assertIn('["yalonote", "yalo note", "yalo-note"]', popup)
         self.assertIn('getDirectoryHandle(ARCHIVE_FOLDER_NAME, { create: true })', popup)
-        self.assertIn('base.name.toLocaleLowerCase() === ARCHIVE_FOLDER_NAME', popup)
+        self.assertIn('RECOGNIZED_ARCHIVE_FOLDER_NAMES.has(base.name.toLocaleLowerCase())', popup)
         self.assertIn('是否把原有内容全部迁移到新路径', popup)
         self.assertIn('await copyDirectory(previous, handle)', popup)
         self.assertIn('await removeDirectoryContents(previous)', popup)
@@ -193,7 +194,7 @@ console.log(JSON.stringify(result.records));
         self.assertIn('startIn: handle', popup)
         self.assertIn('mode: "read"', popup)
         self.assertIn('querySelector("#open-directory")', popup)
-        self.assertIn('可直接选择它正在使用的“yalo note”文件夹', html)
+        self.assertIn('可直接选择它正在使用的“YaloNote”文件夹', html)
 
 
 if __name__ == "__main__":
