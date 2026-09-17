@@ -95,6 +95,31 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaises(ArchiveError):
             archive.locate_source(SID, self.home)
 
+    def test_offline_replayed_user_prefix_selects_unique_complete_rollout(self):
+        stale = self.source.with_name('offline-' + SID + '_' + CHILD_SID + '.jsonl')
+        stale_rows = [
+            record('session_meta', {'session_id': SID, 'id': SID}),
+            message('hello\n', 'offline-first'),
+        ]
+        stale.write_bytes(b''.join(map(raw, stale_rows)))
+
+        source = archive.locate_source(SID, self.home)
+
+        self.assertEqual(source, self.source)
+
+    def test_offline_prefix_fallback_rejects_conflicting_or_complete_candidate(self):
+        stale = self.source.with_name('offline-' + SID + '_' + CHILD_SID + '.jsonl')
+        stale.write_bytes(b''.join(map(raw, [
+            record('session_meta', {'session_id': SID, 'id': SID}),
+            message('different request', 'offline-first'),
+        ])))
+        with self.assertRaisesRegex(ArchiveError, 'active source branch'):
+            archive.locate_source(SID, self.home)
+
+        stale.write_bytes(self.source.read_bytes())
+        with self.assertRaisesRegex(ArchiveError, 'active source branch'):
+            archive.locate_source(SID, self.home)
+
     def test_history_branch_is_reconstructed_from_verified_boundary(self):
         parent_rows = [
             {**record('session_meta', {'session_id': SID, 'id': SID,

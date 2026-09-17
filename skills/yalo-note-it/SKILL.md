@@ -29,7 +29,7 @@ description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文�
 5. 用户主动更改路径时，先询问“是否把原有内容全部迁移到新路径？”。确认迁移后执行 `configure --root ABSOLUTE_BASE_PATH --user-confirmed --migrate-existing`；选择保留旧内容时执行同一命令并添加 `--keep-existing`。未取得明确选择时不得切换配置。迁移成功后删除旧归档目录；选择保留时旧目录不变。
 6. 执行 `archive --message-id ID --sha256 HASH`，必要时沿用第 2 步的 `--confirmed`。成功后简短回复“当前会话已归档”并给出返回文件链接；失败说明具体原因，不声称已成功或完整保存。
 
-脚本从 `CODEX_SESSION_ID` / `CODEX_THREAD_ID` 取得身份，两者冲突、缺失或 metadata 校验失败均停止。多个候选文件仅在 `history_base` 的 ordinal 与字节边界能够唯一重建当前分支时接受；边界不完整、存在歧义或仍有无关候选时停止。禁止按修改时间猜当前 Session。`probe` 没有看到当前消息时可再读一次；仍未落盘就明确报告，不能缩短截止点。
+脚本从 `CODEX_SESSION_ID` / `CODEX_THREAD_ID` 取得身份，两者冲突、缺失或 metadata 校验失败均停止。多个候选文件优先按 `history_base` 的 ordinal 与字节边界唯一重建当前分支。没有 `history_base` 时，仅允许一种窄回退：某个旧候选只含未获响应的用户消息，且这些消息与唯一完整候选开头逐条一致（忽略行尾换行差异），完整候选还必须有后续记录；这用于识别断网提交后原样重提留下的残缺文件。内容冲突、完整候选并列、真实分支或仍有无关候选时停止。禁止按修改时间、文件大小或名称猜当前 Session。`probe` 没有看到当前消息时可再读一次；仍未落盘就明确报告，不能缩短截止点。
 
 归档请求之后的执行回合不进入本次档案。首次配置时保留原始 `message_id` / `sha256`，后续路径确认不是新的截止点。上下文丢失导致无法确认原请求时停止并说明原因。
 

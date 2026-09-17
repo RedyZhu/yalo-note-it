@@ -99,6 +99,45 @@ def source_thread_id(path):
     return identifiers[-1].lower()
 
 
+def normalized_replayed_user_text(row):
+    text = user_text(row)
+    if text is None:
+        return None
+    return text.replace('\r\n', '\n').rstrip('\n')
+
+
+def resolve_replayed_prefix(paths):
+    """Resolve a stale offline-submit file only when one rollout strictly contains it."""
+    retained = {}
+    for path in paths:
+        rows = [row for _, row in read_records(path) if keep_record(row)]
+        retained[path] = rows
+
+    supersets = []
+    for candidate, candidate_rows in retained.items():
+        if not candidate_rows:
+            continue
+        supersedes_all = True
+        for other, other_rows in retained.items():
+            if other == candidate:
+                continue
+            if not other_rows or len(candidate_rows) <= len(other_rows):
+                supersedes_all = False
+                break
+            replayed = [normalized_replayed_user_text(row) for row in other_rows]
+            if any(text is None for text in replayed):
+                supersedes_all = False
+                break
+            candidate_prefix = [normalized_replayed_user_text(row)
+                                for row in candidate_rows[:len(other_rows)]]
+            if candidate_prefix != replayed:
+                supersedes_all = False
+                break
+        if supersedes_all:
+            supersets.append(candidate)
+    return supersets[0] if len(supersets) == 1 else None
+
+
 def locate_source(session_id, home):
     candidates = []
     for folder in ('sessions', 'archived_sessions'):
@@ -134,6 +173,11 @@ def locate_source(session_id, home):
         if len(matches) != 1:
             raise ArchiveError('History base does not resolve to exactly one source')
         parents[child] = (matches[0], end_offset)
+
+    if not parents:
+        replayed_source = resolve_replayed_prefix(sources)
+        if replayed_source is not None:
+            return replayed_source
 
     leaves = [path for path in sources if path not in {parent for parent, _ in parents.values()}]
     if len(leaves) != 1:
