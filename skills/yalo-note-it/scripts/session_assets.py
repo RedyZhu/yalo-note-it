@@ -8,7 +8,7 @@ import re
 import tempfile
 from urllib.parse import unquote, urlparse
 
-from codex_format import ArchiveError
+from archive_errors import ArchiveError
 
 
 @dataclass(frozen=True)
@@ -51,9 +51,9 @@ def text_references(text):
             yield path
 
 
-def references(block):
-    if block['type'] == 'input_image':
-        url = block['image_url']
+def references(content):
+    if content.is_image:
+        url = content.value
         if url.startswith('data:'):
             return
         path = local_path(url)
@@ -61,7 +61,7 @@ def references(block):
             raise ArchiveError('Non-embedded image cannot be reliably preserved: ' + url[:160])
         yield path
     else:
-        text = block['text']
+        text = content.value
         # Tool output sometimes contains JSON; decode it before examining its strings.
         try:
             value = json.loads(text)
@@ -90,27 +90,13 @@ def file_hash(path):
         return hashlib.file_digest(handle, 'sha256').hexdigest()
 
 
-def plan_assets(selected, home):
+def plan_assets(reference_sources, home):
+    """Plan copies from format-neutral, prevalidated content sources."""
     roots = temporary_roots(home)
     assets = {}
-    for _, row in selected:
-        p = row['payload']
-        if p.get('type') == 'message':
-            blocks = p['content']
-        elif p.get('type') == 'custom_tool_call_output':
-            blocks = p['output']
-        elif p.get('type') == 'function_call_output':
-            output = p['output']
-            if isinstance(output, str):
-                blocks = [{'type': 'input_text', 'text': output}]
-            elif isinstance(output, list):
-                blocks = output
-            else:
-                raise ArchiveError('Unsupported function output')
-        else:
-            continue
-        for block in blocks:
-            for path in references(block):
+    for source in reference_sources:
+        for content in source.content:
+            for path in references(content):
                 absolute = Path(os.path.abspath(path))
                 resolved = path.resolve()
                 if not any(root == absolute or root in absolute.parents or
@@ -121,7 +107,8 @@ def plan_assets(selected, home):
                 if not resolved.is_file():
                     raise ArchiveError('Necessary temporary attachment missing; original reference retained in source: ' + str(path))
                 if resolved not in assets:
-                    assets[resolved] = Asset(resolved, p['id'], file_hash(resolved))
+                    assets[resolved] = Asset(
+                        resolved, source.record_id, file_hash(resolved))
     return list(assets.values())
 
 
