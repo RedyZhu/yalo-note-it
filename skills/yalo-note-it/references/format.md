@@ -6,19 +6,41 @@ Codex Desktop preserves verified visible rollout records byte-for-byte as `sessi
 
 ## Codex Desktop
 
-Observed locally on 2026-09-10, Codex Desktop rollout `cli_version=0.153.4`.
+Observed locally on Codex Desktop rollouts from `cli_version=0.115` through
+`0.155.0-alpha.16.4`, including `0.142.0-alpha.6` history branches.
 This is a strict adapter for an internal format, not a claim of a stable Codex API.
 
 - Current shell exposes `CODEX_SESSION_ID` and `CODEX_THREAD_ID`. The source first row has matching `payload.session_id` and `payload.id`.
 - Source names include the session UUID under `CODEX_HOME/sessions`; `archived_sessions` is also searched for the exact UUID. Never select by recency.
 - Current user input was observed on disk before executing tools. Each invocation verifies its own complete, newline-terminated cutoff row; the observation is not a timing guarantee.
-- User messages carry `internal_chat_message_metadata_passthrough.content_item_kinds`. Verified visible kinds: `user.text`, `user.image`. Verified injected kinds: `plugins.recommendations`, `agents_md.instructions`, `environments.environment_context`. Mixed/unknown provenance is rejected rather than editing the row.
-- Assistant visible phases observed: `commentary`, `final_answer`. `final` is supported as the equivalent declared channel. Analysis/reasoning is excluded.
-- Tool calls use `custom_tool_call`; results use `custom_tool_call_output` with a list of `input_text` blocks. Image content uses `input_image` with `image_url` and optional `detail`. Embedded image URLs are retained in place.
-- Additional observed tool forms: `function_call` with `id`, `call_id`, `name`, string `arguments`; `function_call_output` with `id`, `call_id`, and either string `output` or a non-empty list of `input_text` blocks. These are preserved too; no synthetic execution status is added when the source omits it.
-- Known excluded top-level records: `world_state`, `turn_context`, `token_usage_record`. Known event messages: task start/complete, thread settings, token count and `item_completed` (UI mirrors of response records). `reasoning` response items are excluded, without reading or extracting their content.
 - Metadata includes `base_instructions`, so the user approved excluding the entire metadata row. It is still required to identify the source and choose the session year/month.
-- Other formats (including legacy messages without provenance, alternate tool representations, compaction records and new attachment types) fail explicitly pending verification. No silent compatibility fallback.
+
+### Compatibility matrix
+
+| Record family | Preserved | Excluded after validation | Rejected |
+|---|---|---|---|
+| User messages | `user.text`, `user.image`; verified pre-provenance id-less ordinary text/images, either without metadata or with only a non-empty `turn_id` (including inline markup, file attachments, and both verified ambient-browser request envelopes) | `plugins.recommendations`, `agents_md.instructions`, `environments.environment_context`, `skills.selected_skill_instructions`, `additional_content.codex_apps_writing_block_edits`; verified legacy plugin, AGENTS, environment, startup, ambient-browser-only, and exact host `turn_aborted` envelopes | Current id-bearing messages without provenance; unknown or mixed provenance outside the verified legacy browser-request shapes; complete unknown legacy wrappers; internal legacy envelopes mixed with images |
+| Assistant messages | `commentary`, `final`, `final_answer`, including verified pre-ID records | `analysis`, `reasoning`; verified realtime transport prefixes | Missing or unknown visibility phase |
+| Tools | `custom_tool_call`, `function_call`; legacy outputs keyed only by `call_id`; outputs represented as a string or `input_text`/`input_image` blocks; verified `web_search_call` search records and `image_generation_call` records containing embedded PNG base64 | — | Unknown call/output shapes, statuses, actions, result encodings, or content blocks |
+| Agent transport | — | Validated `agent_message` text/encrypted transport and `inter_agent_communication_metadata` with boolean `trigger_turn` | Unknown routing, content, or metadata shapes |
+| Realtime | Validated user/assistant `transcript_segment` | Session start/close transport and realtime delegation wrappers | Unknown realtime event or transcript shape |
+| Session/UI internals | — | `session_meta`, `world_state`, `turn_context`, `token_usage_record`, `compacted`, `reasoning`; known events `task_started`, `task_complete`, `thread_settings_applied`, `token_count`, `item_completed`, `turn_aborted` | Every other top-level, response-item, or event kind |
+
+Image content uses `input_image` with `image_url` and optional `detail`; embedded data URLs and verified image-generation results stay in the source record. Tool result strings are normalized only for attachment inspection—the archived bytes are never rewritten. Missing legacy message/output IDs are never added: attachment naming uses the source ordinal for messages and the existing `call_id` for outputs. A trigger selected as the archive cutoff must still have its real, non-empty message ID. No synthetic execution status is added when the source omits it.
+
+Other formats fail explicitly pending verification. No silent compatibility fallback.
+
+## Maintenance boundaries
+
+- `codex_format.py` owns Codex record classification, validation, and conversion to narrow `ReferenceSource` values.
+- `session_source.py` owns source identity, history reconstruction, JSONL reading, cutoff verification, and record selection.
+- `session_assets.py` owns format-neutral reference discovery and attachment copying; it does not inspect Codex payload kinds.
+- `archive_store.py` owns configuration, migration, atomic replacement, locking, and archive persistence.
+- `runtime_context.py` owns Codex environment identity and home-directory resolution.
+- `archive_trigger.py` owns the explicit archive-authorization phrase matcher.
+- `record_session.py` is only the command-line application coordinator. `archive_errors.py` defines the shared user-reportable error contract.
+
+To support a new observed format, capture its exact structural evidence, classify it as preserved or internal, change only the owning adapter, add positive and fail-closed boundary tests, update the matrix, and run both the full suite and a real read-only `check`. Do not add a broad ignore rule or a Session-specific condition.
 
 ## Attachments
 
@@ -36,7 +58,7 @@ Official skill documentation: https://learn.chatgpt.com/docs/build-skills
 
 ## Edited-message history branches
 
-A child history file declares `history_base.thread_id`, `end_ordinal_exclusive`, and `end_byte_offset`. The adapter resolves each parent only when exactly one candidate has a complete newline-terminated prefix at that byte offset, contains exactly the declared number of records, and ends at ordinal `end_ordinal_exclusive - 1`. It then reads the verified parent prefix followed by the child file. Abandoned parent records after the boundary are not retained.
+A child history file declares `history_base.thread_id`, `end_ordinal_exclusive`, and `end_byte_offset`. The adapter normally resolves each parent only when exactly one candidate has a complete newline-terminated prefix at that byte offset, contains exactly the declared number of records, and ends at ordinal `end_ordinal_exclusive - 1`. Verified legacy `paginated` histories can contain stale byte offsets; for those only, the adapter derives the boundary by reading the uniquely identified parent from its first ordinal through `end_ordinal_exclusive - 1` and requiring a complete, strictly contiguous JSONL sequence. It then reads that verified parent prefix followed by the child file. Abandoned parent records after the boundary are not retained.
 
 Filename matching, session ID, and modification time are never sufficient on their own. Cycles, ambiguous parents, invalid boundaries, multiple active leaves, and unrelated candidates (including guardian-review files sharing the session ID) still fail explicitly rather than being guessed or concatenated.
 
