@@ -13,14 +13,14 @@
 - `matchesUrl(url)`：判断适配器是否支持当前页面；
 - `conversationId(url)`：从会话 URL 取得稳定 ID，无法取得时返回 `null`；
 - `inspectPage(targetPosition)`：在目标网页中执行，返回标准化页面状态。
-- `captureArtifact(key)`（可选）：取得 `inspectPage` 发现的用户附件，返回文件状态和内容。
+- `captureArtifact(key)`（可选）：取得 `inspectPage` 发现的用户附件或助手生成文件，返回文件状态和内容。
 
 `inspectPage` 不得依赖 Service Worker 闭包，因为 Chrome 会将函数序列化后注入目标页面。返回结构为：
 
 ```js
 {
   records: [{ id, role, markdown, attachments }],
-  artifacts: [{ key, messageId, displayName }],
+  artifacts: [{ key, messageId, displayName, kind }],
   scrollTop,
   scrollHeight,
   viewport,
@@ -52,3 +52,5 @@
 站点适配器负责消息节点、角色、正文、附件、滚动区域和站点专属排除规则。通用采集器负责顶部稳定检测、向下扫描、去重、排序、截止点、进度、停止和本地写入。
 
 DeepSeek 适配器只读取 `.ds-assistant-message-main-content` 中的最终回答，明确排除同一助手消息节点里的“已思考”内容。实测附件卡没有稳定下载链接，当前仅记录文件名，不注册 `captureArtifact`。
+
+ChatGPT 的 kind 为 uploaded 或 generated；生成文件识别消息内的 group/open-file 文件按钮及 sandbox 链接，优先点击文件卡的下载按钮。同一消息内同名卡片与链接只捕获一次。

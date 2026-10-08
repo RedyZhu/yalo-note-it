@@ -128,8 +128,28 @@ function inspectChatGptPage(targetPosition) {
   const artifacts = [];
   for (const turn of turns) {
     const content = turn.querySelector("[data-message-author-role]") ?? turn;
-    if (content.getAttribute("data-message-author-role") !== "user") continue;
+    const role = content.getAttribute("data-message-author-role");
+    if (role !== "user" && role !== "assistant") continue;
     const messageId = turn.getAttribute("data-testid") ?? "";
+    if (role === "assistant") {
+      const seen = new Set();
+      for (const button of turn.querySelectorAll("button.group\\/open-file")) {
+        const displayName = cleanText(button.getAttribute("aria-label"));
+        if (!displayName || seen.has(displayName)) continue;
+        seen.add(displayName);
+        artifacts.push({ key: `${messageId}::generated::${displayName}`, messageId,
+          displayName, kind: "generated" });
+      }
+      for (const link of turn.querySelectorAll('a[href^="sandbox:/"]')) {
+        const href = link.getAttribute("href");
+        let displayName = href.split("/").at(-1);
+        try { displayName = decodeURIComponent(displayName); } catch { /* Keep literal name. */ }
+        if (!displayName || seen.has(displayName)) continue;
+        seen.add(displayName);
+        artifacts.push({ key: `${messageId}::sandbox::${href}`, messageId,
+          displayName, kind: "generated" });
+      }
+    }
     const cards = [...turn.querySelectorAll("[role='group'][aria-label]")]
       .filter((card) => card.querySelector("[data-testid='library-file-icon']"));
     cards.forEach((card, index) => {
@@ -139,6 +159,7 @@ function inspectChatGptPage(targetPosition) {
         key: `${messageId}::${index}::${displayName}`,
         messageId,
         displayName,
+        kind: role === "assistant" ? "generated" : "uploaded",
       });
     });
   }
@@ -158,17 +179,33 @@ async function captureChatGptArtifact(artifactKey) {
   const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
   const parts = String(artifactKey).split("::");
   const messageId = parts.shift() ?? "";
-  const cardIndex = Number(parts.shift() ?? 0);
-  const displayName = parts.join("::");
+  const selector = parts.shift() ?? "0";
+  const cardIndex = Number(selector);
+  const identity = parts.join("::");
+  let displayName = identity;
+  if (selector === "sandbox") {
+    displayName = identity.split("/").at(-1);
+    try { displayName = decodeURIComponent(displayName); } catch { /* Keep literal name. */ }
+  }
   const turn = [...document.querySelectorAll("main [data-testid^='conversation-turn-']")]
     .find((candidate) => candidate.getAttribute("data-testid") === messageId);
   const cards = turn
     ? [...turn.querySelectorAll("[role='group'][aria-label]")]
       .filter((card) => card.querySelector("[data-testid='library-file-icon']"))
     : [];
-  const card = cards[cardIndex];
-  if (!card || card.getAttribute("aria-label") !== displayName) {
-    return { key: artifactKey, messageId, displayName, status: "unavailable", error: "上传文件卡已不在页面中。" };
+  const generatedButton = selector === "generated" && turn
+    ? [...turn.querySelectorAll("button.group\\/open-file")]
+      .find((button) => button.getAttribute("aria-label") === displayName) : null;
+  const generatedRow = generatedButton?.closest(".group\\/artifact-row");
+  const generatedDownload = generatedRow
+    ? [...generatedRow.querySelectorAll("button")].find((button) =>
+      /^(下载文件|download file)$/iu.test(button.getAttribute("aria-label") ?? "")) : null;
+  const sandboxLink = selector === "sandbox" && turn
+    ? [...turn.querySelectorAll('a[href^="sandbox:/"]')]
+      .find((link) => link.getAttribute("href") === identity) : null;
+  const card = generatedButton ?? sandboxLink ?? cards[cardIndex];
+  if (!card || (!generatedButton && !sandboxLink && card.getAttribute("aria-label") !== displayName)) {
+    return { key: artifactKey, messageId, displayName, status: "unavailable", error: "文件下载入口已不在页面中。" };
   }
 
   const findDownloadButton = () => [...document.querySelectorAll("button")].find((button) => {
@@ -180,17 +217,28 @@ async function captureChatGptArtifact(artifactKey) {
     return /^(关闭|close)$/iu.test(label.trim());
   });
 
+  let openedPreview = false;
+  // Preview/download controls may scroll a pinned or virtualized turn into view.
+  // Preserve the scan cursor rather than continuing from the attachment's position.
+  const scrollPositions = [];
+  for (let parent = card.parentElement; parent; parent = parent.parentElement) {
+    if (parent.scrollHeight > parent.clientHeight) {
+      scrollPositions.push({ element: parent, top: parent.scrollTop, left: parent.scrollLeft });
+    }
+  }
   try {
     card.scrollIntoView({ block: "center", behavior: "instant" });
-    (card.querySelector("button") ?? card).click();
-    let downloadButton = null;
-    for (let attempt = 0; attempt < 50 && !downloadButton; attempt += 1) {
-      await wait(100);
-      downloadButton = findDownloadButton();
+    let downloadButton = generatedDownload ?? sandboxLink;
+    if (!downloadButton) {
+      openedPreview = true;
+      (card.querySelector("button") ?? card).click();
+      for (let attempt = 0; attempt < 50 && !downloadButton; attempt += 1) {
+        await wait(100);
+        downloadButton = findDownloadButton();
+      }
     }
     if (!downloadButton) throw new Error("文件预览没有提供下载按钮。");
 
-    const originalCreateObjectURL = URL.createObjectURL;
     const anchorPrototype = HTMLAnchorElement.prototype;
     const originalAnchorClick = anchorPrototype.click;
     let resolvePayload;
@@ -213,13 +261,9 @@ async function captureChatGptArtifact(artifactKey) {
         base64: btoa(binary),
       });
     };
-    URL.createObjectURL = (object) => {
-      if (object instanceof Blob) void readBlob(object);
-      return originalCreateObjectURL.call(URL, object);
-    };
     anchorPrototype.click = function interceptedClick() {
       const href = this.href;
-      if (href && !href.startsWith("blob:")) {
+      if (href && /^(https?:|blob:)/iu.test(href)) {
         void fetch(href, { credentials: "include" })
           .then((response) => {
             if (!response.ok) throw new Error(`下载请求失败：HTTP ${response.status}`);
@@ -231,20 +275,25 @@ async function captureChatGptArtifact(artifactKey) {
       return undefined;
     };
 
+    let timeout;
     try {
-      downloadButton.click();
+      // Call the original method for the page's sandbox link so its handler runs.
+      if (sandboxLink) originalAnchorClick.call(sandboxLink);
+      else downloadButton.click();
       const payload = await Promise.race([
         payloadPromise,
-        wait(15000).then(() => ({ status: "unavailable", error: "等待文件下载超时。" })),
+        new Promise((resolve) => {
+          timeout = setTimeout(() => resolve({ status: "unavailable", error: "等待文件下载超时，入口可能已过期。" }), 15000);
+        }),
       ]);
       return { key: artifactKey, messageId, displayName, ...payload };
     } finally {
-      URL.createObjectURL = originalCreateObjectURL;
+      clearTimeout(timeout);
       anchorPrototype.click = originalAnchorClick;
-      findCloseButton()?.click();
+      if (openedPreview) findCloseButton()?.click();
     }
   } catch (error) {
-    findCloseButton()?.click();
+    if (openedPreview) findCloseButton()?.click();
     return {
       key: artifactKey,
       messageId,
@@ -252,6 +301,10 @@ async function captureChatGptArtifact(artifactKey) {
       status: "unavailable",
       error: error instanceof Error ? error.message : String(error),
     };
+  } finally {
+    for (const { element, top, left } of scrollPositions) {
+      element.scrollTo({ top, left, behavior: "instant" });
+    }
   }
 }
 

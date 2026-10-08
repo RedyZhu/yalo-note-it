@@ -1,6 +1,13 @@
 const statusElement = document.querySelector("#status");
 const ARCHIVE_FOLDER_NAME = "YaloNote";
 const RECOGNIZED_ARCHIVE_FOLDER_NAMES = new Set(["yalonote", "yalo note", "yalo-note"]);
+const targetTabParameter = new URLSearchParams(location.search).get("targetTabId");
+const taskTabId = targetTabParameter && /^\d+$/u.test(targetTabParameter) ? Number(targetTabParameter) : null;
+let busy = false;
+
+async function getTargetTab() {
+  return taskTabId ? chrome.tabs.get(taskTabId) : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+}
 
 async function openSettingsDatabase() {
   return new Promise((resolve, reject) => {
@@ -133,7 +140,7 @@ async function assertDirectoriesDoNotContainEachOther(previous, next) {
 }
 
 async function control(mode) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = await getTargetTab();
   if (!tab?.id) {
     statusElement.textContent = "找不到当前标签页。";
     return;
@@ -142,6 +149,9 @@ async function control(mode) {
   statusElement.textContent = mode === "record" ? "正在读取对话，请保持此窗口打开…" : "正在停止…";
   try {
     if (mode === "record") {
+      if (busy) return;
+      busy = true;
+      document.querySelector("#record").disabled = true;
       const handle = await readArchiveRoot();
       if (!handle) throw new Error("尚未设置目录，请先录入一个明确的本地路径。");
       statusElement.textContent = "正在确认记录目录权限与写入能力…";
@@ -154,9 +164,13 @@ async function control(mode) {
       tabId: tab.id,
     });
     statusElement.textContent = response?.message ?? "操作失败。";
-    if (response?.ok) setTimeout(() => window.close(), 1200);
   } catch (error) {
     statusElement.textContent = error?.message ?? "插件后台意外停止，请重试。";
+  } finally {
+    if (mode === "record") {
+      busy = false;
+      document.querySelector("#record").disabled = false;
+    }
   }
 }
 
@@ -200,6 +214,12 @@ document.querySelector("#stop").addEventListener("click", () => control("stop"))
 
 readArchiveRoot()
   .then(async (handle) => {
+    const tab = await getTargetTab();
+    const previous = tab && await chrome.runtime.sendMessage({ type: "record-control", mode: "status", tabId: tab.id });
+    if (previous?.message) {
+      statusElement.textContent = `${previous.running ? "当前任务" : "上次结果"}：${previous.message}`;
+      return;
+    }
     if (!handle) {
       statusElement.textContent = "尚未设置目录，请录入一个明确的本地路径。";
       return;
@@ -208,5 +228,6 @@ readArchiveRoot()
     statusElement.textContent = permission === "granted"
       ? `当前记录目录：${handle.name}`
       : `已保存目录 ${handle.name}；点击 Yalo note it 时会请求恢复写权限。`;
+    if (taskTabId) statusElement.textContent += " 点击上方按钮开始，完成前请保留本窗口。";
   })
   .catch((error) => { statusElement.textContent = error?.message ?? "无法读取目录设置。"; });

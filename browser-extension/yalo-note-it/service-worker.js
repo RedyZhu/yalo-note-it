@@ -6,6 +6,54 @@ const MAX_RECORD_STEPS = 2000;
 const PROVIDERS = self.YaloNoteProviders ?? [];
 
 let activeRun = null;
+let openingTaskWindow = null;
+
+async function openTaskWindow(tab) {
+  if (openingTaskWindow) return openingTaskWindow;
+  openingTaskWindow = (async () => {
+    const page = chrome.runtime.getURL("popup.html");
+    const existing = (await chrome.tabs.query({ url: `${page}*` }))[0];
+    const targetTabId = activeRun?.tabId ?? tab.id;
+    const url = `${page}?targetTabId=${targetTabId}`;
+    if (existing) {
+      // Never navigate a live task window: it holds the permission context.
+      if (!activeRun && existing.url !== url) await chrome.tabs.update(existing.id, { url });
+      await chrome.windows.update(existing.windowId, { focused: true });
+      return;
+    }
+    await chrome.windows.create({ url, type: "popup", width: 380, height: 390 });
+  })();
+  try {
+    await openingTaskWindow;
+  } finally {
+    openingTaskWindow = null;
+  }
+}
+
+chrome.action.onClicked.addListener((tab) => {
+  openTaskWindow(tab).catch(console.error);
+});
+
+async function runStatus(value) {
+  const database = await new Promise((resolve, reject) => {
+    const request = indexedDB.open("yalo-note-it", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("settings");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = database.transaction("settings", value ? "readwrite" : "readonly");
+      const store = transaction.objectStore("settings");
+      const request = value ? store.put(value, "last-run") : store.get("last-run");
+      transaction.oncomplete = () => resolve(value ?? request.result ?? null);
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+  } finally {
+    database.close();
+  }
+}
 
 const sleep = (milliseconds) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -92,7 +140,7 @@ async function writeWebArchive(providerId, conversationId, body, artifacts, sour
   const root = await loadArchiveRoot();
   if (!root) throw new Error("请先在插件中录入一个明确的本地路径。" );
   if ((await root.queryPermission({ mode: "readwrite" })) !== "granted") {
-    throw new Error("记录目录权限已失效，请在插件中重新设置目录。" );
+    throw new Error("记录目录写权限已失效。请在独立记录页点击 Yalo note it 重新授权，并保持记录页打开直到完成。" );
   }
   let directory = root;
   for (const name of ["sessions", providerId, conversationId]) {
@@ -107,6 +155,7 @@ async function writeWebArchive(providerId, conversationId, body, artifacts, sour
       key: artifact.key,
       messageId: artifact.messageId,
       displayName: artifact.displayName,
+      kind: artifact.kind ?? "uploaded",
       status: artifact.status,
       capturedAt: artifact.capturedAt,
     };
@@ -152,6 +201,7 @@ async function runRecordExport(tab, provider, cutoffId = null) {
   const records = new Map();
   const artifacts = new Map();
   try {
+    await runStatus({ tabId: tab.id, running: true, message: "正在扫描对话，请保持记录页打开。" });
     await setBadge(tab.id, "REC", "#7c3aed");
     let state = await inspectRecordPage(tab.id, provider, "top");
     if (state?.error) throw new Error(state.error);
@@ -162,19 +212,26 @@ async function runRecordExport(tab, provider, cutoffId = null) {
       state = await inspectRecordPage(tab.id, provider, "top");
       if (state?.error) throw new Error(state.error);
       const signature = `${state.scrollHeight}|${state.records[0]?.id ?? ""}`;
-      stableTop = signature === topSignature ? stableTop + 1 : 0;
+      stableTop = state.scrollTop <= 3 && signature === topSignature ? stableTop + 1 : 0;
       topSignature = signature;
       if (stableTop >= 2) break;
     }
     if (stableTop < 2) throw new Error("达到等待上限前仍未确认稳定的对话顶部。");
     state = await inspectRecordPage(tab.id, provider, "none");
     let stableBottom = 0;
+    let bottomSignature = "";
     for (let step = 0; step < MAX_RECORD_STEPS && !run.stopped; step += 1) {
       for (const record of state.records) records.set(record.id, record);
       if (provider.captureArtifact) {
         for (const candidate of state.artifacts ?? []) {
           if (artifacts.has(candidate.key)) continue;
-          const captured = await captureArtifact(tab.id, provider, candidate.key);
+          let captured;
+          try {
+            captured = await captureArtifact(tab.id, provider, candidate.key);
+            if (!captured) throw new Error("文件捕获未返回结果。");
+          } catch (error) {
+            captured = { status: "unavailable", error: String(error.message ?? error) };
+          }
           artifacts.set(candidate.key, {
             ...candidate,
             ...captured,
@@ -182,14 +239,19 @@ async function runRecordExport(tab, provider, cutoffId = null) {
           });
         }
       }
-      stableBottom = state.atBottom ? stableBottom + 1 : 0;
+      const signature = `${state.scrollHeight}|${records.size}|${artifacts.size}|${state.records.at(-1)?.id ?? ""}`;
+      stableBottom = state.atBottom && signature === bottomSignature ? stableBottom + 1 : 0;
+      bottomSignature = signature;
       if (stableBottom >= 3) break;
       state = await inspectRecordPage(tab.id, provider, "next");
       if (state?.error) throw new Error(state.error);
-      await sleep(120);
+      await sleep(state.atBottom ? LOAD_SETTLE_MS : 400);
       state = await inspectRecordPage(tab.id, provider, "none");
+      if (state?.error) throw new Error(state.error);
       await setBadge(tab.id, String(records.size), "#7c3aed");
     }
+    if (run.stopped) throw new Error("记录已停止，未覆盖已有归档。请重新运行以保存完整对话。");
+    if (stableBottom < 3) throw new Error("达到扫描上限但未确认对话底部，未覆盖已有归档。");
     let ordered = [...records.values()].sort((left, right) => {
       const leftNumber = Number(left.id.match(/(\d+)$/u)?.[1] ?? 0);
       const rightNumber = Number(right.id.match(/(\d+)$/u)?.[1] ?? 0);
@@ -227,17 +289,29 @@ async function runRecordExport(tab, provider, cutoffId = null) {
     const artifactSummary = artifacts.size
       ? `，保存 ${savedArtifacts} 个文件${failedArtifacts ? `，${failedArtifacts} 个不可用` : ""}`
       : "";
-    return { ok: true, message: `已记录 ${ordered.length} 条消息${artifactSummary}。` };
+    const result = { ok: true, message: `已记录 ${ordered.length} 条消息${artifactSummary}。` };
+    await runStatus({ ...result, tabId: tab.id, running: false, finishedAt: new Date().toISOString() });
+    return result;
   } catch (error) {
     console.error("Raw Record export failed", error);
     await setBadge(tab.id, "ERR", "#dc2626");
-    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    const result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+    await runStatus({ ...result, tabId: tab.id, running: false, finishedAt: new Date().toISOString() }).catch(console.error);
+    return result;
   } finally {
     if (activeRun === run) activeRun = null;
   }
 }
 
 async function handleRecordControl(message) {
+  if (message.mode === "status") {
+    const status = await runStatus();
+    if (!status || status.tabId !== message.tabId) return null;
+    if (status.running && !activeRun) {
+      return { ...status, running: false, ok: false, message: "上次记录任务已中断，未确认完成。请在独立记录页重新运行。" };
+    }
+    return status;
+  }
   if (message.mode === "stop") {
     if (!activeRun) return { ok: false, message: "当前没有正在执行的任务。" };
     activeRun.stopped = true;

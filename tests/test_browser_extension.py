@@ -9,6 +9,12 @@ EXTENSION = ROOT / "browser-extension" / "yalo-note-it"
 
 
 class BrowserExtensionAdapterTests(unittest.TestCase):
+    def test_persistent_task_window_and_error_reporting(self):
+        subprocess.run(["node", str(ROOT / "tests" / "extension_task.cjs")], check=True)
+
+    def test_generated_chatgpt_artifacts(self):
+        subprocess.run(["node", str(ROOT / "tests" / "chatgpt_artifacts.cjs")], check=True)
+
     def test_manifest_declares_existing_icon_assets(self):
         manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
 
@@ -149,8 +155,8 @@ console.log(JSON.stringify(result.records));
         manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
         readme = (EXTENSION / "README.md").read_text(encoding="utf-8")
 
-        self.assertEqual(manifest["version"], "0.12.1")
-        self.assertIn("当前版本：**0.12.1**", readme)
+        self.assertEqual(manifest["version"], "0.13.3")
+        self.assertIn("当前版本：**0.13.3**", readme)
 
     def test_record_button_can_restore_saved_directory_permission(self):
         popup = (EXTENSION / "popup.js").read_text(encoding="utf-8")
