@@ -11,6 +11,9 @@ from session_assets import copy_assets
 
 
 ARCHIVE_FOLDER_NAME = 'YaloNote'
+ARCHIVE_LOCATION_FILE = '.yalo-note-location.json'
+ARCHIVE_LOCATION_KIND = 'yalo-note-archive-root'
+ARCHIVE_LOCATION_SCHEMA_VERSION = 1
 
 
 def config_path():
@@ -48,6 +51,26 @@ def atomic_bytes(path, data):
         temporary.unlink(missing_ok=True)
 
 
+def write_archive_location(root):
+    root = root.resolve()
+    payload = {
+        'schemaVersion': ARCHIVE_LOCATION_SCHEMA_VERSION,
+        'kind': ARCHIVE_LOCATION_KIND,
+        'archive_root': str(root),
+    }
+    data = (json.dumps(payload, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+    atomic_bytes(root / ARCHIVE_LOCATION_FILE, data)
+
+
+def _activate_archive_root(root):
+    root = root.resolve()
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = (json.dumps({'archive_root': str(root)}, ensure_ascii=False, indent=2)
+            + '\n').encode('utf-8')
+    atomic_bytes(path, data)
+
+
 def check_writable(root):
     with tempfile.TemporaryFile(dir=root) as stream:
         stream.write(b'archive write check')
@@ -62,6 +85,8 @@ def copy_archive_tree(source, destination):
         if path.is_symlink():
             raise ArchiveError(f'Archive migration does not follow symbolic links: {path}')
         relative = path.relative_to(source)
+        if relative == Path(ARCHIVE_LOCATION_FILE):
+            continue
         target = destination / relative
         if path.is_dir():
             target.mkdir(parents=True, exist_ok=True)
@@ -94,11 +119,10 @@ def configure(base, migrate_existing=None):
         raise ArchiveError('Existing archive directory unavailable; migration aborted')
     root.mkdir(parents=True, exist_ok=True)
     check_writable(root)
-    path = config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     if existing is not None and existing != root and migrate_existing:
         copy_archive_tree(existing, root)
-        atomic_bytes(path, (json.dumps({'archive_root': str(root)}, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+        write_archive_location(root)
+        _activate_archive_root(root)
         try:
             shutil.rmtree(existing)
         except OSError as exc:
@@ -106,12 +130,14 @@ def configure(base, migrate_existing=None):
                 f'Archive migrated and new path activated, but old directory cleanup failed: {existing}'
             ) from exc
         return root
-    atomic_bytes(path, (json.dumps({'archive_root': str(root)}, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+    write_archive_location(root)
+    _activate_archive_root(root)
     return root
 
 
 def commit_archive(root, session_id, started, selected, asset_plan):
     check_writable(root)
+    write_archive_location(root)
     target = root / 'sessions' / 'codex' / f'{started.year:04}-{started.month:02}' / session_id
     target.mkdir(parents=True, exist_ok=True)
     lock = target / '.archive.lock'

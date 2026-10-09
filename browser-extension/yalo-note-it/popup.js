@@ -1,57 +1,70 @@
 const statusElement = document.querySelector("#status");
+const actionButtons = [...document.querySelectorAll("button")];
+const recordButton = document.querySelector("#record");
+const stopButton = document.querySelector("#stop");
+const openArchiveButton = document.querySelector("#open-archive");
+const configureButton = document.querySelector("#configure");
 const ARCHIVE_FOLDER_NAME = "YaloNote";
 const RECOGNIZED_ARCHIVE_FOLDER_NAMES = new Set(["yalonote", "yalo note", "yalo-note"]);
 
-async function openSettingsDatabase() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("yalo-note-it", 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("settings");
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+let operationState = "initializing";
+let stopPending = false;
+let archiveRootConfigured = false;
+let currentArchiveContext = null;
+
+function setActionButtonsDisabled(disabled) {
+  for (const button of actionButtons) button.disabled = disabled;
+}
+
+function syncOperationControls() {
+  recordButton.disabled = stopPending || operationState !== "idle";
+  configureButton.disabled = stopPending || operationState !== "idle";
+  openArchiveButton.disabled = stopPending
+    || operationState !== "idle"
+    || !archiveRootConfigured
+    || !currentArchiveContext?.conversationId;
+  stopButton.disabled = stopPending
+    || operationState === "initializing"
+    || operationState === "preparing"
+    || operationState === "configuring"
+    || operationState === "opening"
+    || operationState === "closing";
+}
+
+function setOperationState(state) {
+  operationState = state;
+  syncOperationControls();
+}
+
+function setStatus(message, kind = "info") {
+  statusElement.textContent = message;
+  statusElement.dataset.kind = kind;
+}
+
+async function updateRecordStatus(tabId, mode, message = null, pageUrl = null) {
+  const response = await chrome.runtime.sendMessage({
+    type: "record-status",
+    mode,
+    tabId,
+    ...(message ? { message } : {}),
+    ...(pageUrl ? { pageUrl } : {}),
   });
+  if (!response?.ok) throw new Error(response?.message ?? "无法读取记录任务状态。" );
+  return response;
 }
 
-async function readArchiveRoot() {
-  const database = await openSettingsDatabase();
+async function persistRecordError(tab, message) {
   try {
-    return await new Promise((resolve, reject) => {
-      const request = database.transaction("settings", "readonly")
-        .objectStore("settings").get("archive-root");
-      request.onsuccess = () => resolve(request.result ?? null);
-      request.onerror = () => reject(request.error);
-    });
-  } finally {
-    database.close();
+    await updateRecordStatus(tab.id, "error", message, tab.url);
+  } catch (error) {
+    console.error("Failed to persist Yalo note it error", error);
   }
 }
 
-async function saveArchiveRoot(handle) {
-  const database = await openSettingsDatabase();
-  try {
-    await new Promise((resolve, reject) => {
-      const transaction = database.transaction("settings", "readwrite");
-      transaction.objectStore("settings").put(handle, "archive-root");
-      transaction.oncomplete = resolve;
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
-    });
-  } finally {
-    database.close();
-  }
-}
-
-async function clearArchiveRoot() {
-  const database = await openSettingsDatabase();
-  try {
-    await new Promise((resolve, reject) => {
-      const transaction = database.transaction("settings", "readwrite");
-      transaction.objectStore("settings").delete("archive-root");
-      transaction.oncomplete = resolve;
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
-    });
-  } finally {
-    database.close();
+async function ensureFileUrlAccess() {
+  if (!chrome.extension?.isAllowedFileSchemeAccess
+      || !(await chrome.extension.isAllowedFileSchemeAccess())) {
+    throw new Error("请在扩展详情页开启“允许访问文件网址”，然后重新打开当前归档。");
   }
 }
 
@@ -81,132 +94,178 @@ async function verifyWritable(handle) {
   }
 }
 
-async function copyDirectory(source, destination) {
-  for await (const [name, sourceEntry] of source.entries()) {
-    if (sourceEntry.kind === "directory") {
-      const targetDirectory = await destination.getDirectoryHandle(name, { create: true });
-      await copyDirectory(sourceEntry, targetDirectory);
-      continue;
+async function configuredArchiveRoot(base) {
+  if (RECOGNIZED_ARCHIVE_FOLDER_NAMES.has(base.name.toLocaleLowerCase())) return base;
+  try {
+    return await base.getDirectoryHandle(ARCHIVE_FOLDER_NAME);
+  } catch (error) {
+    if (error?.name === "NotFoundError") {
+      throw new Error("所选目录中没有 Codex 已配置的 YaloNote 文件夹。");
     }
-    const sourceFile = await sourceEntry.getFile();
-    let targetFile;
-    try {
-      targetFile = await destination.getFileHandle(name);
-      const existing = await targetFile.getFile();
-      const sourceBytes = new Uint8Array(await sourceFile.arrayBuffer());
-      const existingBytes = new Uint8Array(await existing.arrayBuffer());
-      const identical = sourceBytes.length === existingBytes.length
-        && sourceBytes.every((byte, index) => byte === existingBytes[index]);
-      if (!identical) {
-        throw new Error(`迁移目标存在同名冲突文件：${name}`);
-      }
-      continue;
-    } catch (error) {
-      if (error?.name !== "NotFoundError") throw error;
-    }
-    targetFile = await destination.getFileHandle(name, { create: true });
-    const writable = await targetFile.createWritable();
-    const contents = await sourceFile.arrayBuffer();
-    await writable.write(contents);
-    await writable.close();
-    const copied = new Uint8Array(await (await targetFile.getFile()).arrayBuffer());
-    const original = new Uint8Array(contents);
-    if (copied.length !== original.length
-        || !original.every((byte, index) => byte === copied[index])) {
-      throw new Error(`迁移文件校验失败：${name}`);
-    }
-  }
-}
-
-async function removeDirectoryContents(directory) {
-  for await (const [name, entry] of directory.entries()) {
-    await directory.removeEntry(name, { recursive: entry.kind === "directory" });
-  }
-}
-
-async function assertDirectoriesDoNotContainEachOther(previous, next) {
-  const nextInsidePrevious = await previous.resolve(next);
-  const previousInsideNext = await next.resolve(previous);
-  if (nextInsidePrevious !== null || previousInsideNext !== null) {
-    throw new Error("新旧记录目录不能互相包含，请选择旧目录之外的独立位置。");
+    throw error;
   }
 }
 
 async function control(mode) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) {
-    statusElement.textContent = "找不到当前标签页。";
-    return;
+  if (mode === "record") {
+    if (operationState !== "idle" || stopPending) return;
+    setOperationState("preparing");
+  } else {
+    if (stopPending) return;
+    stopPending = true;
+    syncOperationControls();
   }
 
-  statusElement.textContent = mode === "record" ? "正在读取对话，请保持此窗口打开…" : "正在停止…";
+  let closeScheduled = false;
+  let tab = null;
   try {
+    [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error("找不到当前标签页。");
+    setStatus(mode === "record" ? "正在读取对话，请保持此窗口打开…" : "正在停止…");
     if (mode === "record") {
-      const handle = await readArchiveRoot();
+      const handle = await self.YaloArchiveAccess.readArchiveRoot();
       if (!handle) throw new Error("尚未设置目录，请先录入一个明确的本地路径。");
-      statusElement.textContent = "正在确认记录目录权限与写入能力…";
+      setStatus("正在确认记录目录权限与写入能力…");
       await verifyWritable(handle);
-      statusElement.textContent = "正在读取对话，请保持此窗口打开…";
+      setStatus("正在读取对话，请保持此窗口打开…");
+      setOperationState("recording");
     }
     const response = await chrome.runtime.sendMessage({
       type: "record-control",
       mode,
       tabId: tab.id,
+      pageUrl: tab.url,
     });
-    statusElement.textContent = response?.message ?? "操作失败。";
-    if (response?.ok) setTimeout(() => window.close(), 1200);
+    const message = response?.message ?? "操作失败。";
+    if (mode === "record" && !response?.ok
+        && !response?.cancelled && !response?.detached && !response?.busy) {
+      await persistRecordError(tab, message);
+    }
+    const kind = response?.cancelled || response?.detached || response?.busy
+      ? "info"
+      : response?.ok
+        ? "success"
+        : mode === "record" ? "error" : "info";
+    setStatus(message, kind);
+    if (response?.ok) {
+      closeScheduled = true;
+      setOperationState("closing");
+      setTimeout(() => window.close(), 1200);
+    }
   } catch (error) {
-    statusElement.textContent = error?.message ?? "插件后台意外停止，请重试。";
+    const message = error?.message ?? "插件后台意外停止，请重试。";
+    if (mode === "record" && tab?.id) await persistRecordError(tab, message);
+    setStatus(message, "error");
+  } finally {
+    if (mode === "record" && !closeScheduled
+        && (operationState === "preparing" || operationState === "recording")) {
+      setOperationState("idle");
+    }
+    if (mode === "stop") {
+      stopPending = false;
+      if (!closeScheduled) syncOperationControls();
+    }
   }
 }
 
 async function configureRoot() {
+  if (operationState !== "idle") return;
+  setOperationState("configuring");
   try {
-    const previous = await readArchiveRoot();
     const base = await window.showDirectoryPicker({ id: "yalo-note-base", mode: "readwrite" });
-    const handle = RECOGNIZED_ARCHIVE_FOLDER_NAMES.has(base.name.toLocaleLowerCase())
-      ? base
-      : await base.getDirectoryHandle(ARCHIVE_FOLDER_NAME, { create: true });
-    statusElement.textContent = "正在验证目录读写权限…";
+    const handle = await configuredArchiveRoot(base);
+    setStatus("正在验证目录读写权限…");
     await verifyWritable(handle);
-    if (previous && !(await previous.isSameEntry(handle))) {
-      statusElement.textContent = "正在确认原记录目录权限与写入能力…";
-      await verifyWritable(previous);
-      await assertDirectoriesDoNotContainEachOther(previous, handle);
-      const migrate = window.confirm("检测到原有记录目录。是否把原有内容全部迁移到新路径？\n\n选择“确定”迁移；选择“取消”则旧内容保留在原路径，新记录写入新路径。");
-      if (migrate) {
-        statusElement.textContent = "正在迁移原有记录，请勿关闭窗口…";
-        await copyDirectory(previous, handle);
-        await saveArchiveRoot(handle);
-        try {
-          await removeDirectoryContents(previous);
-        } catch (error) {
-          throw new Error(`内容已迁移且新路径已启用，但旧目录清理失败：${error?.message ?? "未知错误"}`);
-        }
-      }
-    }
-    await saveArchiveRoot(handle);
-    statusElement.textContent = `目录已验证并保存：${handle.name}`;
+    setStatus("正在验证 Codex 路径配置…");
+    await self.YaloArchiveAccess.readArchiveLocation(handle);
+    await self.YaloArchiveAccess.saveArchiveRoot(handle);
+    archiveRootConfigured = true;
+    setStatus(`目录已验证并保存：${handle.name}`, "success");
   } catch (error) {
     if (error?.name !== "AbortError") {
-      statusElement.textContent = error?.message ?? "目录设置失败。";
+      setStatus(error?.message ?? "目录设置失败。", "error");
     }
+  } finally {
+    if (operationState === "configuring") setOperationState("idle");
   }
 }
 
+async function openCurrentArchive() {
+  if (operationState !== "idle" || stopPending) return;
+  setOperationState("opening");
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error("找不到当前标签页。");
+    const context = self.YaloArchiveAccess.contextForUrl(tab.url);
+    if (!context) throw new Error("当前网页尚未配置 Yalo note it 页面适配器。");
+    if (!context.conversationId) {
+      throw new Error("当前页面没有稳定的会话 ID，无法定位归档。");
+    }
+    const handle = await self.YaloArchiveAccess.readArchiveRoot();
+    if (!handle) throw new Error("尚未设置目录，请先录入一个明确的本地路径。");
+    setStatus("正在查找当前会话归档…");
+    await self.YaloArchiveAccess.ensureReadable(handle);
+    await self.YaloArchiveAccess.readConversationArchive(
+      handle,
+      context.providerId,
+      context.conversationId,
+    );
+    const archiveUrl = await self.YaloArchiveAccess.conversationDirectoryFileUrl(
+      handle,
+      context.providerId,
+      context.conversationId,
+    );
+    await ensureFileUrlAccess();
+    await chrome.tabs.create({ url: archiveUrl });
+    setStatus("已在浏览器中打开当前会话归档目录。", "success");
+  } catch (error) {
+    setStatus(error?.message ?? "无法打开当前会话归档。", "error");
+  } finally {
+    if (operationState === "opening") setOperationState("idle");
+  }
+}
+
+openArchiveButton.addEventListener("click", openCurrentArchive);
 document.querySelector("#configure").addEventListener("click", configureRoot);
 document.querySelector("#record").addEventListener("click", () => control("record"));
 document.querySelector("#stop").addEventListener("click", () => control("stop"));
 
-readArchiveRoot()
-  .then(async (handle) => {
+async function initializeStatus() {
+  setActionButtonsDisabled(true);
+  try {
+    const [[tab], handle] = await Promise.all([
+      chrome.tabs.query({ active: true, currentWindow: true }),
+      self.YaloArchiveAccess.readArchiveRoot(),
+    ]);
+    currentArchiveContext = self.YaloArchiveAccess.contextForUrl(tab?.url);
+    archiveRootConfigured = Boolean(handle);
+    if (tab?.id) {
+      const status = await updateRecordStatus(tab.id, "get", null, tab.url);
+      const savedError = status.error;
+      if (savedError) {
+        setStatus(`上次记录失败：${savedError.message}`, "error");
+        return;
+      }
+      const badge = await chrome.action.getBadgeText({ tabId: tab.id });
+      if (badge === "ERR") {
+        setStatus("上次记录失败，但旧版本没有保存错误详情。请再次运行以获取具体原因。", "error");
+        return;
+      }
+    }
     if (!handle) {
-      statusElement.textContent = "尚未设置目录，请录入一个明确的本地路径。";
+      setStatus("尚未设置目录，请录入一个明确的本地路径。");
       return;
     }
     const permission = await handle.queryPermission({ mode: "readwrite" });
-    statusElement.textContent = permission === "granted"
+    setStatus(permission === "granted"
       ? `当前记录目录：${handle.name}`
-      : `已保存目录 ${handle.name}；点击 Yalo note it 时会请求恢复写权限。`;
-  })
-  .catch((error) => { statusElement.textContent = error?.message ?? "无法读取目录设置。"; });
+      : `已保存目录 ${handle.name}；点击 Yalo note it 时会请求恢复写权限。`);
+  } catch (error) {
+    setStatus(error?.message ?? "无法读取目录设置。", "error");
+  } finally {
+    operationState = "idle";
+    syncOperationControls();
+  }
+}
+
+initializeStatus();

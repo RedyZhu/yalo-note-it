@@ -32,7 +32,10 @@ def message(text, identifier='request', role='user', kinds=None, phase=None):
                'content': [{'type': 'input_text' if role == 'user' else 'output_text', 'text': text}]}
     if role == 'user':
         payload['internal_chat_message_metadata_passthrough'] = {
-            'content_item_kinds': ['user.text'] if kinds is None else kinds}
+            'turn_id': 'current-turn',
+            'create_time': 1787658749.4997,
+            'content_item_kinds': ['user.text'] if kinds is None else kinds,
+        }
     if phase:
         payload['phase'] = phase
     return record('response_item', payload)
@@ -46,6 +49,16 @@ def legacy_message(text, image_count=0):
     } for index in range(image_count))
     row['payload']['internal_chat_message_metadata_passthrough'] = {
         'turn_id': 'legacy-turn'}
+    return row
+
+
+def timed_legacy_message(text, image_count=0, identifier='timed-legacy'):
+    row = legacy_message(text, image_count)
+    row['payload']['id'] = identifier
+    row['payload']['internal_chat_message_metadata_passthrough'] = {
+        'turn_id': 'legacy-turn',
+        'create_time': 1787658749.4997,
+    }
     return row
 
 
@@ -202,6 +215,175 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(
                 ArchiveError, 'Unknown legacy injected user wrapper'):
             keep_record(pre_id_message('<turn_aborted>different</turn_aborted>'))
+
+    def test_verified_timed_legacy_user_provenance(self):
+        visible = timed_legacy_message('legacy visible user')
+        startup = timed_legacy_message(
+            '<recommended_plugins>private</recommended_plugins>'
+            '# AGENTS.md instructions for F:\\Project\n\n'
+            '<INSTRUCTIONS>private</INSTRUCTIONS>'
+            '<environment_context>private</environment_context>',
+            identifier='timed-startup',
+        )
+        startup['payload']['content'] = [
+            {'type': 'input_text',
+             'text': '<recommended_plugins>private</recommended_plugins>'},
+            {'type': 'input_text',
+             'text': '# AGENTS.md instructions for F:\\Project\n\n'
+                     '<INSTRUCTIONS>private</INSTRUCTIONS>'},
+            {'type': 'input_text',
+             'text': '<environment_context>private</environment_context>'},
+        ]
+
+        self.assertTrue(keep_record(visible))
+        self.assertEqual(user_text(visible), 'legacy visible user')
+        self.assertFalse(keep_record(startup))
+        self.assertIsNone(user_text(startup))
+
+        integer_time = timed_legacy_message(
+            'integer timestamp', identifier='timed-integer')
+        integer_time['payload']['internal_chat_message_metadata_passthrough'][
+            'create_time'] = 1787658749
+        self.assertTrue(keep_record(integer_time))
+
+    def test_timed_legacy_user_provenance_stays_narrow(self):
+        missing_id = timed_legacy_message('invalid identity')
+        del missing_id['payload']['id']
+        with self.assertRaisesRegex(ArchiveError, 'required fields: id'):
+            keep_record(missing_id)
+        empty_id = timed_legacy_message('invalid identity')
+        empty_id['payload']['id'] = ''
+        with self.assertRaisesRegex(ArchiveError, 'Unsupported user provenance'):
+            keep_record(empty_id)
+        non_string_id = timed_legacy_message('invalid identity')
+        non_string_id['payload']['id'] = 7
+        with self.assertRaisesRegex(ArchiveError, 'Unsupported string fields: id'):
+            keep_record(non_string_id)
+
+        invalid_turn_ids = (None, '', 7)
+        for turn_id in invalid_turn_ids:
+            row = timed_legacy_message('invalid turn')
+            row['payload']['internal_chat_message_metadata_passthrough'][
+                'turn_id'] = turn_id
+            with (self.subTest(turn_id=turn_id),
+                  self.assertRaisesRegex(ArchiveError, 'Unsupported user provenance')):
+                keep_record(row)
+
+        invalid_times = (None, '', True, 0, -1, float('nan'),
+                         float('inf'), float('-inf'), 10 ** 1000)
+        for create_time in invalid_times:
+            row = timed_legacy_message('invalid timestamp')
+            row['payload']['internal_chat_message_metadata_passthrough'][
+                'create_time'] = create_time
+            with (self.subTest(create_time=create_time),
+                  self.assertRaisesRegex(ArchiveError, 'Unsupported user provenance')):
+                keep_record(row)
+
+        unknown_metadata = timed_legacy_message('unknown metadata')
+        unknown_metadata['payload']['internal_chat_message_metadata_passthrough'][
+            'unknown'] = 'field'
+        with self.assertRaisesRegex(ArchiveError, 'Unsupported user provenance'):
+            keep_record(unknown_metadata)
+
+    def test_modern_user_provenance_stays_narrow(self):
+        valid = message('modern visible user', 'modern-visible')
+        self.assertTrue(keep_record(valid))
+
+        for missing_field in ('turn_id', 'create_time'):
+            row = message('missing modern metadata', 'modern-missing')
+            del row['payload']['internal_chat_message_metadata_passthrough'][
+                missing_field]
+            with (self.subTest(missing_field=missing_field),
+                  self.assertRaisesRegex(ArchiveError, 'Unsupported user provenance')):
+                keep_record(row)
+
+        for field, value in (
+                ('turn_id', ''),
+                ('turn_id', 7),
+                ('create_time', True),
+                ('create_time', float('nan')),
+                ('create_time', float('inf')),
+        ):
+            row = message('invalid modern metadata', 'modern-invalid')
+            row['payload']['internal_chat_message_metadata_passthrough'][field] = value
+            with (self.subTest(field=field, value=value),
+                  self.assertRaisesRegex(ArchiveError, 'Unsupported user provenance')):
+                keep_record(row)
+
+        unknown_metadata = message('unknown modern metadata', 'modern-unknown')
+        unknown_metadata['payload']['internal_chat_message_metadata_passthrough'][
+            'unknown'] = 'field'
+        with self.assertRaisesRegex(ArchiveError, 'Unsupported user provenance'):
+            keep_record(unknown_metadata)
+
+    def test_modern_turn_aborted_provenance_is_internal(self):
+        row = message(
+            '<turn_aborted>\nThe user interrupted the previous turn on purpose.\n'
+            '</turn_aborted>',
+            'modern-turn-aborted',
+            kinds=['generic.turn_aborted'],
+        )
+
+        self.assertFalse(keep_record(row))
+        self.assertIsNone(user_text(row))
+
+    def test_timed_legacy_provenance_flows_through_probe_and_prepare(self):
+        internal = timed_legacy_message(
+            '<recommended_plugins>private</recommended_plugins>'
+            '# AGENTS.md instructions for F:\\Project\n\n'
+            '<INSTRUCTIONS>private</INSTRUCTIONS>'
+            '<environment_context>private</environment_context>',
+            identifier='timed-internal',
+        )
+        visible = timed_legacy_message(
+            'legacy visible user', identifier='timed-visible')
+        trigger = message('亚楼记一下', 'timed-trigger')
+        rows = [
+            record('session_meta', {
+                'session_id': SID,
+                'id': SID,
+                'base_instructions': {'text': 'private'},
+            }),
+            internal,
+            visible,
+            trigger,
+        ]
+        self.source.write_bytes(b''.join(map(raw, rows)))
+        session = single_source(self.source)
+
+        probed = source.probe(session)
+        selected, _ = source.prepare(
+            session, 'timed-trigger', source.digest(raw(trigger)))
+
+        self.assertEqual(probed['message_id'], 'timed-trigger')
+        self.assertTrue(probed['is_trigger'])
+        self.assertEqual(
+            [row['payload']['id'] for _, row in selected],
+            ['timed-visible', 'timed-trigger'],
+        )
+        self.assertEqual(selected[0][0], raw(visible))
+
+    def test_timed_legacy_trigger_can_be_the_cutoff(self):
+        trigger = timed_legacy_message(
+            '亚楼记一下', identifier='timed-trigger')
+        rows = [
+            record('session_meta', {
+                'session_id': SID,
+                'id': SID,
+                'base_instructions': {'text': 'private'},
+            }),
+            trigger,
+        ]
+        self.source.write_bytes(b''.join(map(raw, rows)))
+        session = single_source(self.source)
+
+        probed = source.probe(session)
+        selected, _ = source.prepare(
+            session, 'timed-trigger', source.digest(raw(trigger)))
+
+        self.assertEqual(probed['message_id'], 'timed-trigger')
+        self.assertTrue(probed['is_trigger'])
+        self.assertEqual(selected, [(raw(trigger), trigger)])
 
     def test_offline_replayed_user_prefix_selects_unique_complete_rollout(self):
         stale = self.source.with_name('offline-' + SID + '_' + CHILD_SID + '.jsonl')
@@ -893,11 +1075,32 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(list(output.parent.iterdir()), [output])
         self.assertEqual(self.source.read_bytes(), before)
 
+    def test_archive_write_refreshes_browser_location_config(self):
+        selected, started = self.prepare()
+
+        store.commit_archive(self.destination, SID, started, selected, [])
+
+        location = json.loads(
+            (self.destination / store.ARCHIVE_LOCATION_FILE).read_text(encoding='utf-8')
+        )
+        self.assertEqual(location, {
+            'schemaVersion': store.ARCHIVE_LOCATION_SCHEMA_VERSION,
+            'kind': store.ARCHIVE_LOCATION_KIND,
+            'archive_root': str(self.destination.resolve()),
+        })
+
     def test_replace_failure_preserves_previous_archive(self):
         selected, started = self.prepare()
         output = store.commit_archive(self.destination, SID, started, selected, [])
         previous = output.read_bytes()
-        with patch.object(store.os, 'replace', side_effect=OSError('denied')):
+        real_replace = store.os.replace
+
+        def replace(source_path, destination_path):
+            if Path(destination_path).name == 'session.jsonl':
+                raise OSError('denied')
+            return real_replace(source_path, destination_path)
+
+        with patch.object(store.os, 'replace', side_effect=replace):
             with self.assertRaises(OSError):
                 store.commit_archive(self.destination, SID, started, selected[:1], [])
         self.assertEqual(output.read_bytes(), previous)
@@ -977,7 +1180,87 @@ class ArchiveTests(unittest.TestCase):
             second = store.configure(second_base, migrate_existing=False)
             self.assertEqual(second, second_base / store.ARCHIVE_FOLDER_NAME)
             self.assertTrue((first / 'old.txt').is_file())
+            first_location = json.loads(
+                (first / store.ARCHIVE_LOCATION_FILE).read_text(encoding='utf-8')
+            )
+            second_location = json.loads(
+                (second / store.ARCHIVE_LOCATION_FILE).read_text(encoding='utf-8')
+            )
+            self.assertEqual(first_location['archive_root'], str(first.resolve()))
+            self.assertEqual(second_location['archive_root'], str(second.resolve()))
             self.assertEqual(store.load_config(), second)
+
+    def test_location_write_failure_does_not_activate_new_archive(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        first_base = self.root / 'first'
+        with patch.object(store, 'config_path', return_value=config):
+            first = store.configure(first_base)
+            (first / 'old.txt').write_text('old', encoding='utf-8')
+            original_config = config.read_bytes()
+
+            for migrate_existing in (False, True):
+                second_base = self.root / f'second-{migrate_existing}'
+                with (self.subTest(migrate_existing=migrate_existing),
+                      patch.object(store, 'write_archive_location',
+                                   side_effect=OSError('denied')),
+                      self.assertRaises(OSError)):
+                    store.configure(
+                        second_base, migrate_existing=migrate_existing)
+
+                second = second_base / store.ARCHIVE_FOLDER_NAME
+                self.assertEqual(config.read_bytes(), original_config)
+                self.assertEqual(store.load_config(), first)
+                self.assertTrue((first / 'old.txt').is_file())
+                self.assertFalse(
+                    (second / store.ARCHIVE_LOCATION_FILE).exists())
+                if migrate_existing:
+                    self.assertEqual(
+                        (second / 'old.txt').read_text(encoding='utf-8'), 'old')
+                else:
+                    self.assertFalse((second / 'old.txt').exists())
+
+    def test_activation_failure_keeps_previous_root_active(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        first_base = self.root / 'first'
+        second_base = self.root / 'second'
+        with patch.object(store, 'config_path', return_value=config):
+            first = store.configure(first_base)
+            original_config = config.read_bytes()
+            real_atomic_bytes = store.atomic_bytes
+
+            def atomic_bytes(path, data):
+                if Path(path) == config:
+                    raise OSError('denied')
+                return real_atomic_bytes(path, data)
+
+            with (patch.object(store, 'atomic_bytes', side_effect=atomic_bytes),
+                  self.assertRaises(OSError)):
+                store.configure(second_base, migrate_existing=False)
+
+            second = second_base / store.ARCHIVE_FOLDER_NAME
+            self.assertEqual(config.read_bytes(), original_config)
+            self.assertEqual(store.load_config(), first)
+            location = json.loads(
+                (second / store.ARCHIVE_LOCATION_FILE).read_text(encoding='utf-8')
+            )
+            self.assertEqual(location['archive_root'], str(second.resolve()))
+
+    def test_reconfigure_same_root_repairs_location_descriptor(self):
+        config = self.root / 'settings' / 'archive-config.json'
+        base = self.root / 'selected'
+        with patch.object(store, 'config_path', return_value=config):
+            root = store.configure(base)
+            location_path = root / store.ARCHIVE_LOCATION_FILE
+            location_path.write_text('{"archive_root":"stale"}', encoding='utf-8')
+
+            self.assertEqual(store.configure(base), root)
+
+        location = json.loads(location_path.read_text(encoding='utf-8'))
+        self.assertEqual(location, {
+            'schemaVersion': store.ARCHIVE_LOCATION_SCHEMA_VERSION,
+            'kind': store.ARCHIVE_LOCATION_KIND,
+            'archive_root': str(root.resolve()),
+        })
 
     def test_path_change_can_migrate_and_remove_old_archive(self):
         config = self.root / 'settings' / 'archive-config.json'
@@ -990,6 +1273,10 @@ class ArchiveTests(unittest.TestCase):
             (nested / 'old.txt').write_text('old', encoding='utf-8')
             second = store.configure(second_base, migrate_existing=True)
             self.assertEqual((second / 'sessions/codex/old.txt').read_text(encoding='utf-8'), 'old')
+            location = json.loads(
+                (second / store.ARCHIVE_LOCATION_FILE).read_text(encoding='utf-8')
+            )
+            self.assertEqual(location['archive_root'], str(second.resolve()))
             self.assertFalse(first.exists())
             self.assertEqual(store.load_config(), second)
 
@@ -1035,6 +1322,14 @@ class ArchiveTests(unittest.TestCase):
             root = store.configure(base)
         self.assertEqual(root, base / 'YaloNote')
         self.assertTrue(root.is_dir())
+        location = json.loads(
+            (root / store.ARCHIVE_LOCATION_FILE).read_text(encoding='utf-8')
+        )
+        self.assertEqual(location, {
+            'schemaVersion': store.ARCHIVE_LOCATION_SCHEMA_VERSION,
+            'kind': store.ARCHIVE_LOCATION_KIND,
+            'archive_root': str(root.resolve()),
+        })
 
     def test_archive_root_cannot_contain_codex_source_storage(self):
         config = self.root / 'settings' / 'archive-config.json'

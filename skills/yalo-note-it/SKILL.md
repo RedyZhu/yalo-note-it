@@ -25,9 +25,9 @@ description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文�
 1. 运行 `probe`，只读定位当前 Session 与最近一条可见用户消息。确认返回 `text` 就是本次口令或明确归档确认；不匹配则停止，不挑选历史口令替代当前请求。记录返回的 `message_id` 和 `sha256` 作为此次截止点。
 2. 运行 `check --message-id ID --sha256 HASH`，校验当前来源与附件，无归档副作用。仅对于 `$` 入口经用户明确确认的请求添加 `--confirmed`；它不能用于绕过固定口令。首次配置等待后仍使用原截止点，不重新选最近消息。
 3. 运行 `status`。未配置时，按下节请求用户输入明确的绝对本地路径；已配置直接继续。路径失效时报错，不提供或回退到默认路径。
-4. 首次路径明确确认后执行 `configure --root ABSOLUTE_BASE_PATH --user-confirmed`。脚本在该路径下创建固定的 `YaloNote` 子目录，验证写入权限并原子保存实际归档根目录。
-5. 用户主动更改路径时，先询问“是否把原有内容全部迁移到新路径？”。确认迁移后执行 `configure --root ABSOLUTE_BASE_PATH --user-confirmed --migrate-existing`；选择保留旧内容时执行同一命令并添加 `--keep-existing`。未取得明确选择时不得切换配置。迁移成功后删除旧归档目录；选择保留时旧目录不变。
-6. 执行 `archive --message-id ID --sha256 HASH`，必要时沿用第 2 步的 `--confirmed`。成功后简短回复“当前会话已归档”并给出返回文件链接；失败说明具体原因，不声称已成功或完整保存。
+4. 首次路径明确确认后执行 `configure --root ABSOLUTE_BASE_PATH --user-confirmed`。脚本在该路径下创建固定的 `YaloNote` 子目录，验证写入权限，先在归档根内原子写入 `.yalo-note-location.json`，再原子保存全局配置中的实际归档根目录。
+5. 用户主动更改路径时，先询问“是否把原有内容全部迁移到新路径？”。确认迁移后执行 `configure --root ABSOLUTE_BASE_PATH --user-confirmed --migrate-existing`；选择保留旧内容时执行同一命令并添加 `--keep-existing`。未取得明确选择时不得切换配置。迁移时不复制旧根的路径描述文件，而是在新根中生成指向新根的文件；全局配置切换成功后删除旧归档目录。选择保留时旧目录不变，新根获得自己的路径描述文件。
+6. 执行 `archive --message-id ID --sha256 HASH`，必要时沿用第 2 步的 `--confirmed`。脚本在写入 Session 前刷新当前根的 `.yalo-note-location.json`，使旧配置也能自动补齐路径描述。成功后简短回复“当前会话已归档”并给出返回文件链接；失败说明具体原因，不声称已成功或完整保存。
 
 脚本从 `CODEX_SESSION_ID` / `CODEX_THREAD_ID` 取得身份，两者冲突、缺失或 metadata 校验失败均停止。多个候选文件只能按已验证的历史边界唯一重建；任何内容冲突、分支歧义或无关候选都会停止，禁止按修改时间、文件大小或名称猜测。`probe` 没有看到当前消息时可再读一次；仍未落盘就明确报告，不能缩短截止点。诊断格式失败或维护适配器时，读取 [已验证的格式、历史恢复规则与维护边界](references/format.md)。
 
@@ -53,7 +53,21 @@ Yalo note it 尚未配置。
 这是你给 AI 的收尾信号：我会将当前会话保存到这句话为止；它不代表你认可了所有答案，也不代表问题已经解决。
 ```
 
-只在用户明确提供路径后创建或验证 `<用户路径>/YaloNote`，并写入 `%USERPROFILE%\.ai-native-brand\archive-config.json`。配置仅包含实际 `archive_root`，升级安装不覆盖配置；已配置的旧名称 `yalo note` 或 `yalo-note` 保持有效，不自动改名或移动。以后更改路径时必须询问是否迁移旧内容，不能静默移动、删除或遗留而不说明。
+只在用户明确提供路径后创建或验证 `<用户路径>/YaloNote`，并写入 `%USERPROFILE%\.ai-native-brand\archive-config.json` 与归档根内的 `.yalo-note-location.json`。全局配置仅包含实际 `archive_root`，升级安装不覆盖配置；已配置的旧名称 `yalo note` 或 `yalo-note` 保持有效，不自动改名或移动。以后更改路径时必须询问是否迁移旧内容，不能静默移动、删除或遗留而不说明。
+
+### 共享归档根描述文件
+
+`.yalo-note-location.json` 只描述它所在的归档根，不表示其他目录的全局激活状态。格式固定为：
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "yalo-note-archive-root",
+  "archive_root": "F:\\MyFile\\YaloNote"
+}
+```
+
+`archive_root` 必须是解析后的绝对归档根路径，并与文件所在目录一致。该文件由 `archive_store.py` 原子写入，供浏览器扩展从已授权的目录句柄间接取得绝对路径；不得将它当作 Session 内容、摘要或可由浏览器改写的配置。
 
 ## 文件与格式边界
 

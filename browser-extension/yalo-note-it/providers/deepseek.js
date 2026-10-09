@@ -123,6 +123,7 @@ function inspectDeepSeekPage(targetPosition) {
     scrollTop: scroller.scrollTop,
     scrollHeight: scroller.scrollHeight,
     viewport: scroller.clientHeight,
+    atTop: scroller.scrollTop <= 3,
     atBottom: scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 3,
     title: document.title,
     url: location.href,

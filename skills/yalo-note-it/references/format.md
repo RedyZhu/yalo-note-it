@@ -19,7 +19,7 @@ This is a strict adapter for an internal format, not a claim of a stable Codex A
 
 | Record family | Preserved | Excluded after validation | Rejected |
 |---|---|---|---|
-| User messages | `user.text`, `user.image`; verified pre-provenance id-less ordinary text/images, either without metadata or with only a non-empty `turn_id` (including inline markup, file attachments, and both verified ambient-browser request envelopes) | `plugins.recommendations`, `agents_md.instructions`, `environments.environment_context`, `skills.selected_skill_instructions`, `additional_content.codex_apps_writing_block_edits`; verified legacy plugin, AGENTS, environment, startup, ambient-browser-only, and exact host `turn_aborted` envelopes | Current id-bearing messages without provenance; unknown or mixed provenance outside the verified legacy browser-request shapes; complete unknown legacy wrappers; internal legacy envelopes mixed with images |
+| User messages | `user.text`, `user.image` with exact modern metadata fields `turn_id`, `create_time`, and `content_item_kinds`; verified pre-provenance ordinary text/images either with neither an ID nor metadata, or with only a non-empty `turn_id` in metadata (ID optional); verified non-empty-ID pre-`content_item_kinds` messages whose metadata is exactly a non-empty `turn_id` plus a positive finite numeric `create_time` (including inline markup, file attachments, and both verified ambient-browser request envelopes) | `plugins.recommendations`, `agents_md.instructions`, `environments.environment_context`, `skills.selected_skill_instructions`, `additional_content.codex_apps_writing_block_edits`, `generic.turn_aborted`; verified legacy plugin, AGENTS, environment, startup, ambient-browser-only, and exact host `turn_aborted` envelopes | Other user metadata field sets; other id-bearing messages outside the verified legacy shapes; unknown or mixed provenance outside the verified legacy browser-request shapes; complete unknown legacy wrappers; internal legacy envelopes mixed with images |
 | Assistant messages | `commentary`, `final`, `final_answer`, including verified pre-ID records | `analysis`, `reasoning`; verified realtime transport prefixes | Missing or unknown visibility phase |
 | Tools | `custom_tool_call`, `function_call`; legacy outputs keyed only by `call_id`; outputs represented as a string or `input_text`/`input_image` blocks; verified `web_search_call` search records and `image_generation_call` records containing embedded PNG base64 | — | Unknown call/output shapes, statuses, actions, result encodings, or content blocks |
 | Agent transport | — | Validated `agent_message` text/encrypted transport and `inter_agent_communication_metadata` with boolean `trigger_turn` | Unknown routing, content, or metadata shapes |
@@ -35,12 +35,34 @@ Other formats fail explicitly pending verification. No silent compatibility fall
 - `codex_format.py` owns Codex record classification, validation, and conversion to narrow `ReferenceSource` values.
 - `session_source.py` owns source identity, history reconstruction, JSONL reading, cutoff verification, and record selection.
 - `session_assets.py` owns format-neutral reference discovery and attachment copying; it does not inspect Codex payload kinds.
-- `archive_store.py` owns configuration, migration, atomic replacement, locking, and archive persistence.
+- `archive_store.py` owns configuration, the shared archive-root locator, migration, atomic replacement, locking, and archive persistence.
 - `runtime_context.py` owns Codex environment identity and home-directory resolution.
 - `archive_trigger.py` owns the explicit archive-authorization phrase matcher.
 - `record_session.py` is only the command-line application coordinator. `archive_errors.py` defines the shared user-reportable error contract.
 
 To support a new observed format, capture its exact structural evidence, classify it as preserved or internal, change only the owning adapter, add positive and fail-closed boundary tests, update the matrix, and run both the full suite and a real read-only `check`. Do not add a broad ignore rule or a Session-specific condition.
+
+## Shared archive-root locator
+
+Codex keeps the active absolute root in `%USERPROFILE%\.ai-native-brand\archive-config.json`. The browser extension cannot read that OS-local configuration directly, so `archive_store.py` also writes `.yalo-note-location.json` inside the active archive root. This root-local descriptor describes only its own containing directory; it is not a global active-root marker and is not part of any Session archive.
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "yalo-note-archive-root",
+  "archive_root": "F:\\MyFile\\YaloNote"
+}
+```
+
+The schema is strict: `schemaVersion` is `1`, `kind` is `yalo-note-archive-root`, and `archive_root` is the resolved absolute path of the directory containing the file. The browser may use it only after the user grants a directory handle and the containing root is validated; the browser does not create, migrate, or rewrite this descriptor.
+
+Configuration and persistence follow these rules:
+
+- Initial or same-root configuration verifies the root, atomically writes its locator, then atomically writes the global active-root configuration.
+- A migration copies archive content but excludes the old locator, writes a newly generated locator for the destination, switches the global configuration, and only then removes the old root.
+- `--keep-existing` leaves the old root untouched, creates a locator for the new root, and activates the new root globally.
+- Every `archive` commit refreshes the current root locator before writing the Session file, so an older valid global configuration gains the descriptor on its next archive.
+- A locator write failure must not be hidden or treated as a successful configuration/archive operation. A locator from another root must never be copied forward as current path evidence.
 
 ## Attachments
 

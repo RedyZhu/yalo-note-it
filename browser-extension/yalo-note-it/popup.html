@@ -34,10 +34,22 @@
       }
       button.primary { color: #f7f5ef; border-color: #171717; background: #171717; }
       button.danger { color: #b42318; }
-      #status { min-height: 38px; margin: 2px 0 8px; color: #666158; font-size: 12px; }
+      button:disabled { cursor: not-allowed; opacity: 0.58; }
+      #status {
+        min-height: 38px;
+        max-height: 150px;
+        margin: 2px 0 8px;
+        overflow-y: auto;
+        overflow-wrap: anywhere;
+        color: #666158;
+        font-size: 12px;
+      }
+      #status[data-kind="error"] { color: #b42318; }
+      #status[data-kind="success"] { color: #16794a; }
       .directory-actions {
         display: flex;
-        justify-content: flex-end;
+        justify-content: space-between;
+        gap: 8px;
       }
       .directory-actions button {
         width: auto;
@@ -60,13 +72,17 @@
       <img src="icons/icon-32.png" alt="">
       <h1>Yalo note it</h1>
     </div>
-    <button id="record" class="primary">Yalo note it</button>
-    <button id="stop" class="danger">停止当前任务</button>
-    <div id="status"></div>
+    <button id="record" class="primary" disabled>Yalo note it</button>
+    <button id="stop" class="danger" disabled>停止当前任务</button>
+    <div id="status" role="status" aria-live="polite"></div>
     <div class="directory-actions">
-      <button id="configure">设置本地目录</button>
+      <button id="open-archive" disabled>打开当前归档</button>
+      <button id="configure" disabled>设置本地目录</button>
     </div>
-    <p class="directory-hint">已安装 Codex Skill？可直接选择它正在使用的“YaloNote”文件夹，共用同一份记录。</p>
+    <p class="directory-hint">请选择 Codex 已配置的“YaloNote”文件夹或其父目录；路径更改与归档迁移请在 Codex 中完成。</p>
+    <script src="providers/chatgpt.js"></script>
+    <script src="providers/deepseek.js"></script>
+    <script src="archive-access.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

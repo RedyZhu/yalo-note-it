@@ -24,6 +24,7 @@
   scrollTop,
   scrollHeight,
   viewport,
+  atTop,
   atBottom,
   title,
   url,
@@ -50,5 +51,7 @@
 `base64` 只在 `saved` 时返回。站点适配器负责通过该站点当前页面提供的入口取得文件；通用采集器负责安全命名、写入 `assets/`、计算 SHA-256 和生成 `manifest.json`。
 
 站点适配器负责消息节点、角色、正文、附件、滚动区域和站点专属排除规则。通用采集器负责顶部稳定检测、向下扫描、去重、排序、截止点、进度、停止和本地写入。
+
+ChatGPT 适配器优先从站点标记的助手正文容器读取内容，同时保留旧版 `.markdown` 与通用嵌套容器回退。隐藏的读屏标签不属于正文；任一助手消息无法提取出实际正文时，适配器必须返回错误并阻止保存。
 
 DeepSeek 适配器只读取 `.ds-assistant-message-main-content` 中的最终回答，明确排除同一助手消息节点里的“已思考”内容。实测附件卡没有稳定下载链接，当前仅记录文件名，不注册 `captureArtifact`。

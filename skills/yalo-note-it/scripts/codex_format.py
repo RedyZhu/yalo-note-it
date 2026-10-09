@@ -3,6 +3,7 @@ import base64
 import binascii
 from dataclasses import dataclass
 import datetime as dt
+import math
 import re
 
 from archive_errors import ArchiveError
@@ -14,8 +15,11 @@ EXCLUDED_EVENTS = {'task_started', 'task_complete', 'thread_settings_applied',
 INTERNAL_USER_KINDS = {'plugins.recommendations', 'agents_md.instructions',
                        'environments.environment_context',
                        'skills.selected_skill_instructions',
-                       'additional_content.codex_apps_writing_block_edits'}
+                       'additional_content.codex_apps_writing_block_edits',
+                       'generic.turn_aborted'}
 VISIBLE_USER_KINDS = {'user.text', 'user.image'}
+TIMED_USER_METADATA_FIELDS = frozenset({'turn_id', 'create_time'})
+MODERN_USER_METADATA_FIELDS = TIMED_USER_METADATA_FIELDS | {'content_item_kinds'}
 LEGACY_INTERNAL_USER_WRAPPERS = {'recommended_plugins', 'environment_context'}
 LEGACY_AGENTS_ENVELOPE = re.compile(
     r'# AGENTS\.md instructions for [^\r\n]+\r?\n+'
@@ -100,6 +104,24 @@ def validate_optional_strings(obj, fields):
         raise ArchiveError('Unsupported string fields: ' + ', '.join(fields))
 
 
+def validate_timed_user_metadata(payload, meta):
+    require_strings(payload, ['id'])
+    identifier = payload['id']
+    turn_id = meta['turn_id']
+    create_time = meta['create_time']
+    try:
+        valid_create_time = (
+            type(create_time) in {int, float}
+            and create_time > 0
+            and math.isfinite(create_time)
+        )
+    except OverflowError:
+        valid_create_time = False
+    if (not identifier or not isinstance(turn_id, str) or not turn_id
+            or not valid_create_time):
+        raise ArchiveError('Unsupported user provenance')
+
+
 def visible_user(payload):
     meta = payload.get('internal_chat_message_metadata_passthrough')
     if meta is None:
@@ -107,9 +129,17 @@ def visible_user(payload):
                 or 'id' in payload):
             raise ArchiveError('Unsupported user provenance')
         return legacy_visible_user(payload, meta)
-    if isinstance(meta, dict) and set(meta) == {'turn_id'}:
+    if not isinstance(meta, dict):
+        raise ArchiveError('Unsupported user provenance')
+    if set(meta) == {'turn_id'}:
         return legacy_visible_user(payload, meta)
-    require(meta, ['content_item_kinds'])
+    fields = set(meta)
+    if fields == TIMED_USER_METADATA_FIELDS:
+        validate_timed_user_metadata(payload, meta)
+        return legacy_visible_user(payload, meta)
+    if fields != MODERN_USER_METADATA_FIELDS:
+        raise ArchiveError('Unsupported user provenance')
+    validate_timed_user_metadata(payload, meta)
     kinds = meta['content_item_kinds']
     if not isinstance(kinds, list) or not kinds or not all(isinstance(k, str) for k in kinds):
         raise ArchiveError('Unsupported user provenance')
@@ -121,7 +151,7 @@ def visible_user(payload):
 
 
 def legacy_visible_user(payload, meta):
-    """Classify the verified pre-provenance rollout shape without editing rows."""
+    """Classify verified user records without content_item_kinds."""
     if meta is not None:
         turn_id = meta.get('turn_id')
         if not isinstance(turn_id, str) or not turn_id:
