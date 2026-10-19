@@ -3,6 +3,35 @@ function inspectDeepSeekPage(targetPosition) {
     return (value ?? "").replace(/\u00a0/gu, " ").trim();
   }
 
+  function isHidden(element) {
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(element) : null;
+    return element?.getAttribute?.("aria-hidden") === "true"
+      || Boolean(element?.hasAttribute?.("hidden"))
+      || Boolean(element?.hasAttribute?.("inert"))
+      || style?.display === "none"
+      || style?.visibility === "hidden";
+  }
+
+  function hasHiddenAncestor(element) {
+    for (let current = element; current; current = current.parentElement) {
+      if (isHidden(current)) return true;
+    }
+    return false;
+  }
+
+  function pageIsGenerating() {
+    const controls = document.querySelectorAll("button, [role='button']");
+    return [...controls].some((control) => {
+      if (hasHiddenAncestor(control)) return false;
+      const label = cleanText(
+        control.getAttribute?.("aria-label")
+        ?? control.getAttribute?.("title")
+        ?? control.textContent,
+      );
+      return /^(?:stop(?: (?:generating|response|output))?|停止(?:生成|回答|响应|输出)?)$/iu.test(label);
+    });
+  }
+
   function inlineMarkdown(node) {
     if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
     if (node.nodeType !== Node.ELEMENT_NODE) return "";
@@ -98,8 +127,16 @@ function inspectDeepSeekPage(targetPosition) {
   }
 
   const turns = [...document.querySelectorAll("[data-virtual-list-item-key]")];
-  const records = turns.map((turn) => {
-    const key = turn.getAttribute("data-virtual-list-item-key") ?? "";
+  const generating = pageIsGenerating();
+  const records = [];
+  const seenKeys = new Set();
+  for (const turn of turns) {
+    const key = cleanText(turn.getAttribute("data-virtual-list-item-key"));
+    if (!key) return { error: "DeepSeek 消息结构缺少稳定 ID，已停止以避免覆盖或漏记消息。" };
+    if (seenKeys.has(key)) {
+      return { error: `DeepSeek 页面出现重复消息 ID（${key}），已停止以避免覆盖消息。` };
+    }
+    seenKeys.add(key);
     const assistantContent = turn.querySelector(".ds-assistant-message-main-content");
     const userContent = turn.querySelector(".ds-collapsible-text") ?? turn.querySelector(".ds-message");
     const isAssistant = Boolean(assistantContent);
@@ -109,13 +146,17 @@ function inspectDeepSeekPage(targetPosition) {
       : [...turn.querySelectorAll(".ds-message [tabindex='0']")]
         .map((card) => cleanText(card.innerText).split("\n")[0])
         .filter(Boolean);
-    return {
+    const markdown = blockMarkdown(content);
+    if (isAssistant && !markdown && !generating) {
+      return { error: `DeepSeek 助手消息（${key}）未提取到正文，已停止以避免保存不完整档案。` };
+    }
+    records.push({
       id: `deepseek-turn-${key}`,
       role: isAssistant ? "assistant" : "user",
-      markdown: blockMarkdown(content),
+      markdown,
       attachments: [...new Set(attachments)],
-    };
-  });
+    });
+  }
 
   return {
     records,
@@ -123,6 +164,8 @@ function inspectDeepSeekPage(targetPosition) {
     scrollTop: scroller.scrollTop,
     scrollHeight: scroller.scrollHeight,
     viewport: scroller.clientHeight,
+    generating,
+    atTop: scroller.scrollTop <= 3,
     atBottom: scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 3,
     title: document.title,
     url: location.href,

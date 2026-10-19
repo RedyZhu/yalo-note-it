@@ -1,23 +1,95 @@
-"""Local, byte-preserving Codex session archive. Python standard library only."""
+"""Create a local, verifiable Codex thread archive. Standard library only."""
 import argparse
 import json
 from pathlib import Path
 import sys
 
-from archive_errors import ArchiveError
+from archive_errors import ArchiveError, UnsupportedAppServerError
 from archive_store import (
     commit_archive,
     configure,
     load_config,
 )
-from codex_format import reference_source
-from runtime_context import codex_home, current_id
-from session_assets import plan_assets
+from app_server_client import AppServerClient
+from runtime_context import codex_home, current_identity
 from session_source import (
     locate_source,
-    prepare,
+    prepare_package,
     probe,
 )
+from thread_source import ThreadArchiveSource
+
+
+def _package_result(package, read_only):
+    return {
+        'thread_id': package.thread_id,
+        'session_id': package.session_id,
+        'source': package.source,
+        'records': package.record_count,
+        'turns': package.turn_count,
+        'assets': len(package.assets),
+        'cutoff': package.cutoff_id,
+        'read_only': read_only,
+    }
+
+
+def _app_server_operation(args, identity, home):
+    with AppServerClient(codex_home=home) as client:
+        source = ThreadArchiveSource(client, identity, home)
+        if args.command == 'probe':
+            return source.probe(args.message_id)
+        package = source.prepare(
+            args.message_id,
+            args.sha256,
+            args.confirmed,
+        )
+        result = _package_result(package, args.command == 'check')
+        if args.command == 'archive':
+            root = load_config()
+            if root is None:
+                raise ArchiveError(
+                    'Archive not configured; ask user to confirm destination first'
+                )
+            result['archive'] = str(commit_archive(root, package))
+            result.pop('read_only')
+        return result
+
+
+def _rollout_operation(args, identity, home):
+    source = locate_source(identity, home)
+    if args.command == 'probe':
+        return {
+            'thread_id': identity.thread_id,
+            'session_id': identity.session_id,
+            'source': str(source),
+            'source_kind': 'rollout-jsonl-fallback',
+            **probe(source, args.message_id),
+        }
+    package = prepare_package(
+        source,
+        identity,
+        args.message_id,
+        args.sha256,
+        home,
+        args.confirmed,
+    )
+    result = _package_result(package, args.command == 'check')
+    if args.command == 'archive':
+        root = load_config()
+        if root is None:
+            raise ArchiveError(
+                'Archive not configured; ask user to confirm destination first'
+            )
+        result['archive'] = str(commit_archive(root, package))
+        result.pop('read_only')
+    return result
+
+
+def _conversation_operation(args, identity, home):
+    try:
+        return _app_server_operation(args, identity, home)
+    except UnsupportedAppServerError:
+        return _rollout_operation(args, identity, home)
 
 
 def main():
@@ -50,49 +122,9 @@ def main():
             choice = True if args.migrate_existing else False if args.keep_existing else None
             result = {'archive_root': str(configure(args.root, choice))}
         else:
-            session_id = current_id()
+            identity = current_identity()
             home = codex_home()
-            source = locate_source(session_id, home)
-            if args.command == 'probe':
-                result = {
-                    'session_id': session_id,
-                    'source': str(source),
-                    **probe(source, args.message_id),
-                }
-            else:
-                selected, started = prepare(
-                    source,
-                    args.message_id,
-                    args.sha256,
-                    args.confirmed,
-                )
-                reference_sources = []
-                for _, row in selected:
-                    candidate = reference_source(row)
-                    if candidate is not None:
-                        reference_sources.append(candidate)
-                assets = plan_assets(reference_sources, home)
-                result = {
-                    'session_id': session_id,
-                    'records': len(selected),
-                    'assets': len(assets),
-                    'cutoff': args.message_id,
-                }
-                if args.command == 'archive':
-                    root = load_config()
-                    if root is None:
-                        raise ArchiveError(
-                            'Archive not configured; ask user to confirm destination first'
-                        )
-                    result['archive'] = str(commit_archive(
-                        root,
-                        session_id,
-                        started,
-                        selected,
-                        assets,
-                    ))
-                else:
-                    result['read_only'] = True
+            result = _conversation_operation(args, identity, home)
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except (ArchiveError, OSError, ValueError) as exc:

@@ -1,5 +1,5 @@
 interface:
   display_name: "Yalo note it"
-  short_description: "说“Yalo note it”或兼容中文口令，原样记录当前会话"
+  short_description: "说“Yalo note it”或兼容中文口令，保存当前会话的可见工作记录"
 policy:
   allow_implicit_invocation: true

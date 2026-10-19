@@ -9,11 +9,26 @@ EXTENSION = ROOT / "browser-extension" / "yalo-note-it"
 
 
 class BrowserExtensionAdapterTests(unittest.TestCase):
+    def run_node_regression(self, script_name):
+        subprocess.run(["node", str(ROOT / "tests" / script_name)], check=True)
+
     def test_persistent_task_window_and_error_reporting(self):
-        subprocess.run(["node", str(ROOT / "tests" / "extension_task.cjs")], check=True)
+        self.run_node_regression("extension_task.cjs")
 
     def test_generated_chatgpt_artifacts(self):
-        subprocess.run(["node", str(ROOT / "tests" / "chatgpt_artifacts.cjs")], check=True)
+        self.run_node_regression("chatgpt_artifacts.cjs")
+
+    def test_chatgpt_dom_discovery(self):
+        self.run_node_regression("chatgpt_dom.cjs")
+
+    def test_archive_access_and_task_window_ui(self):
+        self.run_node_regression("archive_ui.cjs")
+
+    def test_service_worker_context_and_lifecycle(self):
+        self.run_node_regression("service_worker_state.cjs")
+
+    def test_web_archive_writer_transaction_contract(self):
+        self.run_node_regression("web_archive_writer.cjs")
 
     def test_manifest_declares_existing_icon_assets(self):
         manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
@@ -131,11 +146,17 @@ const turns = [
     querySelectorAll: () => [], innerText: '已思考\\n隐藏推理\\n最终回答' }},
 ];
 const scroller = {{ scrollTop: 0, scrollHeight: 100, clientHeight: 100, scrollTo: () => {{}} }};
+const stopControl = {{ textContent: '停止生成', getAttribute: (name) => name === 'aria-label' ? '停止生成' : null,
+  hasAttribute: () => false }};
+global.getComputedStyle = () => ({{}});
 global.document = {{ title: 'Test', querySelector: (selector) => selector === '.ds-virtual-list' ? scroller : null,
-  querySelectorAll: (selector) => selector === '[data-virtual-list-item-key]' ? turns : [] }};
+  querySelectorAll: (selector) => selector === '[data-virtual-list-item-key]' ? turns
+    : selector === "button, [role='button']" ? [stopControl] : [] }};
 require({json.dumps(str(adapter))});
-const result = self.YaloNoteProviders[0].inspectPage('none');
-console.log(JSON.stringify(result.records));
+const initial = self.YaloNoteProviders[0].inspectPage('none');
+turns[1].getAttribute = () => '1';
+const duplicate = self.YaloNoteProviders[0].inspectPage('none');
+console.log(JSON.stringify({{ initial, duplicate }}));
 """
         result = subprocess.run(
             ["node", "-e", script],
@@ -143,7 +164,10 @@ console.log(JSON.stringify(result.records));
             capture_output=True,
             text=True,
         )
-        records = json.loads(result.stdout)
+        payload = json.loads(result.stdout)
+        records = payload["initial"]["records"]
+        self.assertTrue(payload["initial"]["generating"])
+        self.assertIn("重复消息 ID", payload["duplicate"]["error"])
         self.assertEqual(records[0]["role"], "user")
         self.assertEqual(records[0]["markdown"], "用户问题")
         self.assertEqual(records[0]["attachments"], ["资料.pdf"])
@@ -155,8 +179,9 @@ console.log(JSON.stringify(result.records));
         manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
         readme = (EXTENSION / "README.md").read_text(encoding="utf-8")
 
-        self.assertEqual(manifest["version"], "0.13.3")
-        self.assertIn("当前版本：**0.13.3**", readme)
+        self.assertEqual(manifest["version"], "0.14.0")
+        self.assertEqual(manifest["optional_host_permissions"], ["file:///*"])
+        self.assertIn("当前版本：**0.14.0**", readme)
 
     def test_record_button_can_restore_saved_directory_permission(self):
         popup = (EXTENSION / "popup.js").read_text(encoding="utf-8")
@@ -164,41 +189,57 @@ console.log(JSON.stringify(result.records));
         self.assertIn('handle.queryPermission({ mode: "readwrite" })', popup)
         self.assertIn('handle.requestPermission({ mode: "readwrite" })', popup)
         self.assertIn('await verifyWritable(handle)', popup)
-        self.assertIn('正在确认记录目录权限与写入能力', popup)
+        self.assertIn('正在确认记录目录', popup)
+        self.assertIn('await self.YaloArchiveAccess.readArchiveLocation(handle)', popup)
         self.assertLess(
             popup.index('await verifyWritable(handle)', popup.index('async function control')),
             popup.index('chrome.runtime.sendMessage', popup.index('async function control')),
         )
 
-    def test_configuration_creates_named_child_and_prompts_before_migration(self):
+    def test_configuration_reuses_codex_archive_root_without_migration(self):
         popup = (EXTENSION / "popup.js").read_text(encoding="utf-8")
+        configured_start = popup.index("async function configuredArchiveRoot")
+        configured_end = popup.index("async function control", configured_start)
+        configured = popup[configured_start:configured_end]
+        configure_start = popup.index("async function configureRoot")
+        configure_end = popup.index("async function ensureFileUrlAccess", configure_start)
+        configure = popup[configure_start:configure_end]
 
-        self.assertIn('const ARCHIVE_FOLDER_NAME = "YaloNote"', popup)
-        self.assertIn('["yalonote", "yalo note", "yalo-note"]', popup)
-        self.assertIn('getDirectoryHandle(ARCHIVE_FOLDER_NAME, { create: true })', popup)
-        self.assertIn('RECOGNIZED_ARCHIVE_FOLDER_NAMES.has(base.name.toLocaleLowerCase())', popup)
-        self.assertIn('是否把原有内容全部迁移到新路径', popup)
-        self.assertIn('await copyDirectory(previous, handle)', popup)
-        self.assertIn('await removeDirectoryContents(previous)', popup)
-        self.assertIn('await verifyWritable(previous)', popup)
-        self.assertIn('await assertDirectoriesDoNotContainEachOther(previous, handle)', popup)
+        self.assertIn('const ARCHIVE_FOLDER_NAMES = ["YaloNote", "yalo note", "yalo-note"]', popup)
+        self.assertIn('RECOGNIZED_ARCHIVE_FOLDER_NAMES.has(base.name.toLocaleLowerCase())', configured)
+        self.assertIn('return await base.getDirectoryHandle(name)', configured)
+        self.assertNotIn('{ create: true }', configured)
+        self.assertIn('所选目录中没有 Codex 已配置的 YaloNote 文件夹', configured)
+        self.assertIn('const handle = await configuredArchiveRoot(base)', configure)
+        self.assertIn('await self.YaloArchiveAccess.readArchiveLocation(handle)', configure)
+        self.assertIn('await self.YaloArchiveSettings.saveArchiveRoot(handle)', configure)
         self.assertLess(
-            popup.index('await verifyWritable(previous)'),
-            popup.index('await copyDirectory(previous, handle)'),
+            configure.index('await verifyWritable(handle)'),
+            configure.index('await self.YaloArchiveSettings.saveArchiveRoot(handle)'),
         )
+        self.assertNotIn('copyDirectory', popup)
+        self.assertNotIn('removeDirectoryContents', popup)
+        self.assertNotIn('window.confirm', popup)
         self.assertNotIn('D:\\\\MyData\\\\yalo-note', popup)
 
-    def test_directory_action_is_compact_and_has_no_fake_open_button(self):
+    def test_archive_action_is_compact_and_opens_verified_local_archive(self):
         html = (EXTENSION / "popup.html").read_text(encoding="utf-8")
         popup = (EXTENSION / "popup.js").read_text(encoding="utf-8")
 
         self.assertGreater(html.index('id="status"'), html.index('id="stop"'))
+        self.assertGreater(html.index('id="open-archive"'), html.index('id="status"'))
         self.assertGreater(html.index('id="configure"'), html.index('id="status"'))
         self.assertIn('class="directory-actions"', html)
+        self.assertIn('id="open-archive" disabled', html)
         self.assertNotIn('id="open-directory"', html)
         self.assertNotIn('openArchiveRoot', popup)
         self.assertNotIn('yalo-note-open', popup)
-        self.assertIn('可直接选择它正在使用的“YaloNote”文件夹', html)
+        self.assertIn('路径更改与归档迁移请在 Codex 中完成', html)
+        self.assertIn('async function openCurrentArchive()', popup)
+        self.assertIn('await self.YaloArchiveAccess.readConversationArchive(', popup)
+        self.assertIn('await self.YaloArchiveAccess.conversationDirectoryFileUrl(', popup)
+        self.assertIn('await ensureFileUrlAccess()', popup)
+        self.assertIn('await chrome.tabs.create({ url: archiveUrl', popup)
 
 
 if __name__ == "__main__":

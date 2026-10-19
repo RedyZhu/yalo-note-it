@@ -1,5 +1,4 @@
 """Preserve local temporary references without rewriting source records."""
-from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -9,13 +8,7 @@ import tempfile
 from urllib.parse import unquote, urlparse
 
 from archive_errors import ArchiveError
-
-
-@dataclass(frozen=True)
-class Asset:
-    source: Path
-    record_id: str
-    sha256: str
+from archive_model import AssetCopy
 
 
 def temporary_roots(home):
@@ -52,13 +45,15 @@ def text_references(text):
 
 
 def references(content):
-    if content.is_image:
+    if content.kind in {'image', 'audio'}:
         url = content.value
         if url.startswith('data:'):
             return
         path = local_path(url)
         if path is None:
-            raise ArchiveError('Non-embedded image cannot be reliably preserved: ' + url[:160])
+            raise ArchiveError(
+                f'Non-embedded {content.kind} cannot be reliably preserved: ' + url[:160]
+            )
         yield path
     else:
         text = content.value
@@ -107,7 +102,7 @@ def plan_assets(reference_sources, home):
                 if not resolved.is_file():
                     raise ArchiveError('Necessary temporary attachment missing; original reference retained in source: ' + str(path))
                 if resolved not in assets:
-                    assets[resolved] = Asset(
+                    assets[resolved] = AssetCopy(
                         resolved, source.record_id, file_hash(resolved))
     return list(assets.values())
 

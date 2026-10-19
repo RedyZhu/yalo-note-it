@@ -1,11 +1,11 @@
 """Adapter for locally verified Codex desktop rollout formats."""
 import base64
 import binascii
-from dataclasses import dataclass
 import datetime as dt
 import re
 
 from archive_errors import ArchiveError
+from archive_model import ReferenceContent, ReferenceSource
 
 
 EXCLUDED_TOP = {'world_state', 'turn_context', 'token_usage_record', 'compacted'}
@@ -266,27 +266,11 @@ def normalized_output_blocks(output):
     return tuple(output)
 
 
-@dataclass(frozen=True)
-class ReferenceContent:
-    """A format-neutral text or image value that may reference an attachment."""
-
-    value: str
-    is_image: bool = False
-
-
-@dataclass(frozen=True)
-class ReferenceSource:
-    """Validated content that may contain local attachment references."""
-
-    record_id: str
-    content: tuple[ReferenceContent, ...]
-
-
 def reference_content(blocks):
     return tuple(
         ReferenceContent(
             block['image_url'] if block['type'] == 'input_image' else block['text'],
-            is_image=block['type'] == 'input_image',
+            kind='image' if block['type'] == 'input_image' else 'text',
         )
         for block in blocks
     )

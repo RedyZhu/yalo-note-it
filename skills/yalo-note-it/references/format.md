@@ -1,17 +1,50 @@
-# Verified format and operational limits
+# Verified formats and operational limits
 
 ## Source formats
 
-Codex Desktop preserves verified visible rollout records byte-for-byte as `session.jsonl`.
+Codex Desktop is read through the official App Server Thread API first. A strict,
+byte-preserving rollout adapter remains only for installations that explicitly do
+not support the required methods.
 
-## Codex Desktop
+## Codex App Server
+
+- `thread/read` supplies identity and metadata only. `includeTurns=true` is not a
+  completeness mechanism.
+- History uses `thread/turns/list` with `sortDirection=asc` and
+  `itemsView=full`, following `nextCursor` until it is null. A non-full turn is
+  hydrated through fully paginated `thread/items/list`.
+- Duplicate cursors, duplicate Turn/item IDs, non-ascending history, mismatched
+  identity and inconsistent item pages fail explicitly.
+- `CODEX_THREAD_ID` identifies the current Thread. `CODEX_SESSION_ID` can identify
+  its runtime session tree and need not equal either `thread.id` or
+  `thread.sessionId`; the API identity and declared parent/fork relationship are
+  validated without conflating these fields.
+- Visible records are `userMessage`, `agentMessage`, `plan`, command/file/tool,
+  collaboration, web/image and review-mode work items. `reasoning`, `hookPrompt`
+  and `contextCompaction` are validated as internal and excluded. Every unknown
+  item or user-content type fails closed.
+- The cutoff fingerprint is SHA-256 over canonical JSON containing both `turnId`
+  and the complete user item. A requested cutoff that is not visible after a
+  bounded retry fails; it never falls back to an earlier user item.
+- Only an unavailable App Server command or explicit JSON-RPC method-not-supported
+  response enables the rollout adapter. Permission, identity, protocol,
+  pagination and content failures never do.
+
+The archive directory contains `thread.json` and a commit manifest with source
+contract, Thread/Session IDs, CLI/user-agent data, cutoff, completeness, counts
+and SHA-256 hashes. API history is never written under a `.jsonl` name.
+
+## Codex Desktop rollout fallback
 
 Observed locally on Codex Desktop rollouts from `cli_version=0.115` through
 `0.155.0-alpha.16.4`, including `0.142.0-alpha.6` history branches.
 This is a strict adapter for an internal format, not a claim of a stable Codex API.
 
-- Current shell exposes `CODEX_SESSION_ID` and `CODEX_THREAD_ID`. The source first row has matching `payload.session_id` and `payload.id`.
-- Source names include the session UUID under `CODEX_HOME/sessions`; `archived_sessions` is also searched for the exact UUID. Never select by recency.
+- The source first row has `payload.id` matching `CODEX_THREAD_ID` and
+  `payload.session_id` matching the optional `CODEX_SESSION_ID`.
+- Source names include the Thread UUID and edited-history names can also include the
+  session-tree UUID under `CODEX_HOME/sessions`; `archived_sessions` is searched by
+  the same verified identities. Never select by recency.
 - Current user input was observed on disk before executing tools. Each invocation verifies its own complete, newline-terminated cutoff row; the observation is not a timing guarantee.
 - Metadata includes `base_instructions`, so the user approved excluding the entire metadata row. It is still required to identify the source and choose the session year/month.
 
@@ -32,11 +65,14 @@ Other formats fail explicitly pending verification. No silent compatibility fall
 
 ## Maintenance boundaries
 
-- `codex_format.py` owns Codex record classification, validation, and conversion to narrow `ReferenceSource` values.
-- `session_source.py` owns source identity, history reconstruction, JSONL reading, cutoff verification, and record selection.
+- `archive_model.py` owns the format-neutral `ArchivePackage`, references and asset-copy plan.
+- `app_server_client.py` owns App Server process/JSON-RPC lifecycle and complete pagination.
+- `thread_source.py` owns API identity, visibility, cutoff, completeness and mapping into `ArchivePackage`.
+- `codex_format.py` owns fallback rollout classification and conversion to narrow `ReferenceSource` values.
+- `session_source.py` owns fallback source identity, history reconstruction, JSONL reading, cutoff verification, and package conversion.
 - `session_assets.py` owns format-neutral reference discovery and attachment copying; it does not inspect Codex payload kinds.
 - `archive_store.py` owns configuration, migration, atomic replacement, locking, and archive persistence.
-- `runtime_context.py` owns Codex environment identity and home-directory resolution.
+- `runtime_context.py` owns distinct Thread/Session runtime identity and home-directory resolution.
 - `archive_trigger.py` owns the explicit archive-authorization phrase matcher.
 - `record_session.py` is only the command-line application coordinator. `archive_errors.py` defines the shared user-reportable error contract.
 
@@ -46,9 +82,9 @@ To support a new observed format, capture its exact structural evidence, classif
 
 Scan retained visible messages and tool outputs, not tool input code, for explicit absolute local references: Markdown links, typed image blocks, and whole path strings (including JSON values). Paths merely mentioned inside source code, tracebacks and diagnostic prose are not attachment declarations. Recognize OS temp environment directories plus Codex `tmp`, `clipboard`, `generated_images`, and `visualizations`. Preserve ordinary directory references; do not recursively copy directories. Non-embedded image references that are not absolute local files fail because their durability is not established.
 
-Original records are never edited. An asset can be found from its original basename; a differing-content basename collision uses `stem-record_id.ext`. If that also collides, fail. Identical content at a name reuses the existing copy. Changed/missing source assets fail before replacing the archive. A failed run can leave an empty Session directory but cannot replace the prior successful JSONL; newly created asset files are removed on handled failures. A process kill can leave an explicit lock and partial ancillary files, which require inspection before retrying.
+Original records are never edited. An asset can be found from its original basename; a differing-content basename collision uses `stem-record_id.ext`. If that also collides, fail. Identical content at a name reuses the existing copy. Changed/missing source assets fail before replacing the archive. Each replacement is built in a sibling staging directory and activated only after its files and manifest are complete. A process kill can leave an explicit lock, staging directory or backup directory, which requires inspection before retrying.
 
-This is reference recognition, not semantic recovery: unrecognized attachment encodings require adapter support. No network retrieval or tool replay. No source mutation, redaction, summaries, additional metadata or archive timestamps.
+This is reference recognition, not semantic recovery: unrecognized attachment encodings require adapter support. No network retrieval or tool replay. No source mutation, redaction, summaries or generated archive timestamps.
 
 ## Invocation
 

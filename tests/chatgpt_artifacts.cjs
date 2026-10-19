@@ -29,6 +29,14 @@ const button = {
 let downloadAction;
 const download = { getAttribute: () => '下载文件', click: () => downloadAction() };
 const row = { querySelectorAll: () => [button, download] };
+const hiddenDownload = { getAttribute: () => '下载文件', click: () => { throw new Error('Hidden duplicate clicked'); } };
+const hiddenRow = { querySelectorAll: () => [hiddenButton, hiddenDownload] };
+const hiddenButton = {
+  parentElement: scrollRoot,
+  getAttribute: (name) => name === 'aria-hidden' ? 'true' : 'report.md',
+  closest: () => hiddenRow,
+  scrollIntoView() {},
+};
 const link = new Anchor('sandbox:/mnt/data/report.md');
 link.getAttribute = () => link.href;
 link.scrollIntoView = () => {};
@@ -42,7 +50,7 @@ const turn = {
   getAttribute: () => 'conversation-turn-2',
   querySelector: () => content,
   querySelectorAll: (selector) => {
-    if (selector.includes('open-file')) return showFileCard ? [button] : [];
+    if (selector.includes('open-file')) return showFileCard ? [hiddenButton, button] : [];
     if (selector.startsWith('a[')) return [link];
     return [];
   },

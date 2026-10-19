@@ -1,6 +1,6 @@
 ---
 name: yalo-note-it
-description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文“亚楼…记一下”记录当前会话，将可见会话原样保存为本地 JSONL。'
+description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文“亚楼…记一下”记录当前会话，将可见工作记录保存为本地可校验档案。'
 ---
 
 # Yalo note it
@@ -15,7 +15,7 @@ description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文�
 
 ## 来源路由
 
-- 当前环境是 Codex：按下方“Codex 执行”保存原生 Session JSONL。
+- 当前环境是 Codex：按下方“Codex 执行”优先从官方 App Server Thread API 读取当前 Thread；仅在接口明确不支持时使用严格 rollout JSONL 兼容适配器。
 - 用户提供 Web 插件导出的 Raw Record 时，把它视为该 Chat 的原始来源；除非用户另行要求，不把项目文件或其他 Chat 混入记录。
 
 ## Codex 执行
@@ -29,7 +29,9 @@ description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文�
 5. 用户主动更改路径时，先询问“是否把原有内容全部迁移到新路径？”。确认迁移后执行 `configure --root ABSOLUTE_BASE_PATH --user-confirmed --migrate-existing`；选择保留旧内容时执行同一命令并添加 `--keep-existing`。未取得明确选择时不得切换配置。迁移成功后删除旧归档目录；选择保留时旧目录不变。
 6. 执行 `archive --message-id ID --sha256 HASH`，必要时沿用第 2 步的 `--confirmed`。成功后简短回复“当前会话已归档”并给出返回文件链接；失败说明具体原因，不声称已成功或完整保存。
 
-脚本从 `CODEX_SESSION_ID` / `CODEX_THREAD_ID` 取得身份，两者冲突、缺失或 metadata 校验失败均停止。多个候选文件只能按已验证的历史边界唯一重建；任何内容冲突、分支歧义或无关候选都会停止，禁止按修改时间、文件大小或名称猜测。`probe` 没有看到当前消息时可再读一次；仍未落盘就明确报告，不能缩短截止点。诊断格式失败或维护适配器时，读取 [已验证的格式、历史恢复规则与维护边界](references/format.md)。
+脚本从 `CODEX_THREAD_ID` 取得当前 Thread，从可选的 `CODEX_SESSION_ID` 取得运行时会话树身份；两者不是同一概念，禁止假设相等。`thread/read` 必须返回同一 Thread，并验证返回的 `sessionId` 或父级关系与运行时身份相容。历史必须通过 `thread/turns/list` 显式使用 `sortDirection=asc`、`itemsView=full` 并读完全部分页；不得把 `thread/read(includeTurns=true)` 当成完整历史。若某一 Turn 未返回 full items，再使用 `thread/items/list` 完整分页补齐。
+
+App Server 初始化可能需要访问 Codex Home 的本地状态库；文件系统权限受限时按宿主权限流程申请。权限失败、身份不一致、分页重复、内容冲突或未知记录类型都必须显式停止，不能伪装成旧版不支持而降级。只有 App Server 命令缺失或 JSON-RPC 明确返回“不支持该方法”时，才进入 rollout JSONL fallback。fallback 的多个候选文件只能按已验证的历史边界唯一重建，禁止按修改时间、文件大小或名称猜测。指定消息不可见时做有限短重试；仍不可见就明确报告，不能缩短截止点。诊断格式失败或维护适配器时，读取 [已验证的格式、历史恢复规则与维护边界](references/format.md)。
 
 归档请求之后的执行回合不进入本次档案。首次配置时保留原始 `message_id` / `sha256`，后续路径确认不是新的截止点。上下文丢失导致无法确认原请求时停止并说明原因。
 
@@ -57,10 +59,12 @@ Yalo note it 尚未配置。
 
 ## 文件与格式边界
 
-用户提供 `<base-path>` 后，新配置的实际 `<archive-root>` 固定为 `<base-path>/YaloNote`。Codex 输出为 `<archive-root>/sessions/codex/<YYYY-MM>/<session-id>/session.jsonl`；年月取来源 Session 开始时间，不重新生成时间。不存在默认路径。已有配置继续使用其记录的绝对路径。重复调用更新同一文件；失败不得冒充成功。
+用户提供 `<base-path>` 后，新配置的实际 `<archive-root>` 固定为 `<base-path>/YaloNote`，并原子写入根定位文件 `.yalo-note-location.json`。Codex 输出为 `<archive-root>/sessions/codex/<YYYY-MM>/<thread-id>/`；年月取 Thread 开始时间，不重新生成时间。目录至少包含 `manifest.json` 与 `thread.json`，临时附件位于 `assets/`。只有 rollout fallback 会额外保存字节保持的 `raw/session.jsonl`；App Server 数据绝不伪装成 JSONL。不存在默认路径。已有配置继续使用其记录的绝对路径。重复调用原子替换同一 Thread 档案；失败不得冒充成功。
 
-适配的是已实测的 Codex 桌面 rollout 结构。`session_meta` 只用于身份校验，因其内嵌基础指令，整行不保存。所有保留行的字节、字段、顺序、时间原样保留。内部 `user` 消息按 provenance 排除；未知或混合来源、未知可见性、未知记录类型均显式失败，不语义猜测。
+主适配器保存 App Server 提供的可见 `userMessage`、`agentMessage` 与工作过程项目，排除 `reasoning`、`hookPrompt` 和 `contextCompaction`。未知可见性或未知 item 类型显式失败，不语义猜测。manifest 记录 Thread/Session 身份、CLI/API 信息、截止 item 与指纹、`itemsView=full`、完整性、数量和文件哈希。
 
-Codex 端不重复复制内嵌图片；普通项目文件保留原引用；可识别的本地临时附件复制到 `assets`，保留原名，内容冲突时追加来源记录 ID。Codex 端不生成 manifest、Markdown、摘要或索引。读取档案时可用原引用的文件名查找 `assets`；冲突时结合来源记录 ID。缺失临时附件时报错，保留原来源及上次档案，不声称完成。
+rollout fallback 适配已实测的 Codex 桌面 JSONL 结构。`session_meta` 只用于身份校验，因其内嵌基础指令，整行不保存。所有 fallback 保留行的字节、字段、顺序、时间原样保留。内部 `user` 消息按 provenance 排除；未知或混合来源、未知可见性、未知记录类型均显式失败。
+
+Codex 端不重复复制内嵌图片；普通项目文件保留原引用；可识别的本地临时附件复制到 `assets`，保留原名，内容冲突时追加来源记录 ID。Codex 端不生成 Markdown、摘要或索引。读取档案时可用原引用的文件名查找 `assets`；冲突时结合来源记录 ID。缺失临时附件时报错，保留原来源及上次档案，不声称完成。
 
 不要把未知事件简单加入忽略列表以求成功。

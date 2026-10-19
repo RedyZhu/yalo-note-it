@@ -7,8 +7,11 @@ import re
 import uuid
 
 from archive_errors import ArchiveError
+from archive_model import ArchivePackage, ArchiveRecord, THREAD_SCHEMA
 from archive_trigger import is_trigger
-from codex_format import keep_record, timestamp, user_text
+from codex_format import keep_record, reference_source, timestamp, user_text
+from runtime_context import RuntimeIdentity
+from session_assets import plan_assets
 
 
 @dataclass(frozen=True)
@@ -37,13 +40,22 @@ def decode_record(raw, path, line_number):
     return row
 
 
-def read_metadata(path, session_id):
+def _identity(value):
+    return value if isinstance(value, RuntimeIdentity) else RuntimeIdentity(value, value)
+
+
+def read_metadata(path, identity):
+    identity = _identity(identity)
     with path.open('rb') as handle:
         meta = decode_record(handle.readline(), path, 1)
     payload = meta['payload']
-    if (meta.get('type') != 'session_meta' or payload.get('session_id') != session_id
-            or payload.get('id', session_id) != session_id):
-        raise ArchiveError(f'Source session_meta does not match current Session ID: {path}')
+    source_id = payload.get('id')
+    if (meta.get('type') != 'session_meta'
+            or not isinstance(source_id, str) or not source_id
+            or (identity.session_id is not None
+                and payload.get('session_id') != identity.session_id)
+            or (identity.session_id is None and source_id != identity.thread_id)):
+        raise ArchiveError(f'Source session_meta does not match current runtime identity: {path}')
     try:
         timestamp(meta.get('timestamp'))
     except ArchiveError as exc:
@@ -170,17 +182,34 @@ def resolve_replayed_prefix(paths):
     return supersets[0] if len(supersets) == 1 else None
 
 
-def locate_source(session_id, home):
-    candidates = []
+def locate_source(identity, home):
+    identity = _identity(identity)
+    candidates = set()
+    identifiers = {identity.thread_id}
+    if identity.session_id is not None:
+        identifiers.add(identity.session_id)
     for folder in ('sessions', 'archived_sessions'):
         root = home / folder
         if root.exists():
-            candidates.extend(root.rglob('*' + session_id + '*.jsonl'))
+            for identifier in identifiers:
+                candidates.update(root.rglob('*' + identifier + '*.jsonl'))
     if not candidates:
-        raise ArchiveError('No source for current Session')
-    sources = [path.resolve() for path in candidates]
-    metadata = {path: read_metadata(path, session_id) for path in sources}
+        raise ArchiveError('No rollout fallback source for current Thread')
+    sources = sorted(path.resolve() for path in candidates)
+    metadata = {path: read_metadata(path, identity) for path in sources}
+    direct = [
+        path for path in sources
+        if metadata[path]['payload'].get('id') == identity.thread_id
+    ]
+    if (identity.session_id is not None
+            and identity.session_id != identity.thread_id
+            and len(direct) == 1
+            and metadata[direct[0]]['payload'].get('history_base') is None):
+        return SessionSource((SourceSegment(direct[0]),))
     if len(sources) == 1:
+        if (metadata[sources[0]]['payload'].get('id') != identity.thread_id
+                and source_thread_id(sources[0]) != identity.thread_id):
+            raise ArchiveError('Rollout source does not match current Thread ID')
         return SessionSource((SourceSegment(sources[0]),))
 
     source_ids = {path: source_thread_id(path) for path in sources}
@@ -224,6 +253,10 @@ def locate_source(session_id, home):
     leaves = [path for path in sources if path not in {parent for parent, _ in parents.values()}]
     if len(leaves) != 1:
         raise ArchiveError(f'Expected one active source branch; found {len(leaves)}')
+    leaf_meta = metadata[leaves[0]]['payload']
+    if (leaf_meta.get('id') != identity.thread_id
+            and source_thread_id(leaves[0]) != identity.thread_id):
+        raise ArchiveError('Active rollout branch does not match current Thread ID')
 
     chain = [SourceSegment(leaves[0])]
     current = leaves[0]
@@ -288,3 +321,64 @@ def prepare(source, message_id, expected_hash, confirmed=False):
     if not selected or selected[-1][1]['payload'].get('id') != message_id:
         raise ArchiveError('Cutoff was not included')
     return selected, timestamp(rows[0][1]['timestamp'])
+
+
+def prepare_package(source, identity, message_id, expected_hash, home,
+                    confirmed=False):
+    """Convert the strict rollout adapter result into the neutral archive model."""
+    identity = _identity(identity)
+    selected, started = prepare(source, message_id, expected_hash, confirmed)
+    all_rows = read_records(source, message_id)
+    meta = all_rows[0][1]
+    payload = meta['payload']
+    references = []
+    for _, row in selected:
+        candidate = reference_source(row)
+        if candidate is not None:
+            references.append(candidate)
+    assets = plan_assets(references, home)
+    cli_version = payload.get('cli_version')
+    if cli_version is not None and not isinstance(cli_version, str):
+        raise ArchiveError('Invalid rollout cli_version metadata')
+    session_id = identity.session_id or payload.get('session_id') or identity.thread_id
+    document = {
+        'schema': THREAD_SCHEMA,
+        'source': 'rollout-jsonl-fallback',
+        'thread': {
+            'id': identity.thread_id,
+            'sessionId': session_id,
+            'createdAt': int(started.timestamp()),
+            'cliVersion': cli_version,
+        },
+        'turns': [],
+        'fallback': {
+            'rawEvidence': 'raw/session.jsonl',
+            'recordCount': len(selected),
+            'sourceSegments': [str(segment.path) for segment in source.segments],
+        },
+    }
+    records = tuple(
+        ArchiveRecord(
+            row['payload'].get('id') or f'ordinal-{index}',
+            row['type'],
+            row,
+        )
+        for index, (_, row) in enumerate(selected)
+    )
+    return ArchivePackage(
+        thread_id=identity.thread_id,
+        session_id=session_id,
+        started_at=started,
+        cutoff_id=message_id,
+        cutoff_sha256=expected_hash,
+        document=document,
+        source='rollout-jsonl-fallback',
+        source_info={
+            'contract': 'codex-rollout-jsonl',
+            'cliVersion': cli_version,
+        },
+        turn_count=0,
+        records=records,
+        assets=tuple(assets),
+        raw_evidence=b''.join(raw for raw, _ in selected),
+    )

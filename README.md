@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-早期版本，已在 Windows、Python 3.14 和 Codex Desktop rollout `0.153.4` 上验证单文件会话。运行代码只依赖 Python 3.11+ 标准库。
+Codex 主路径通过官方 App Server Thread API 读取当前 Thread，并保存为可校验的结构化档案。仅当 App Server 命令缺失或明确返回“不支持该方法”时，才使用严格的 rollout JSONL 兼容适配器。运行代码只依赖 Python 3.11+ 标准库。
 
-**编辑历史消息后产生的多文件分支，暂不支持归档。** 真实会话可能通过 `history_base` 继承其他文件的部分历史。目前遇到多个候选来源会停止，不猜选最新文件，也不拼接未经验证的内容。这是下一步需要实现的能力。
+来源身份、分页、可见性、记录类型或附件无法验证时会显式停止，不猜选会话、不缩短截止点，也不把未知数据当作可安全忽略的内部信息。rollout fallback 支持经验证的编辑历史边界；歧义分支仍会失败关闭。
 
 ## 安装
 
@@ -57,14 +57,18 @@ D:\MyData
 ## 输出与隐私
 
 ```text
-<用户路径>/YaloNote/sessions/codex/<YYYY-MM>/<session-id>/
-  session.jsonl
-  assets/          # 仅在需要复制临时附件时创建
+<用户路径>/YaloNote/
+  .yalo-note-location.json
+  sessions/codex/<YYYY-MM>/<thread-id>/
+    manifest.json
+    thread.json
+    assets/                    # 仅在需要复制临时附件时创建
+    raw/session.jsonl          # 仅 rollout fallback 保存
 ```
 
-月份取来源会话的开始时间。同一会话重复归档，原子更新同一份 `session.jsonl`；写入失败保留上次成功档案。所有保留行的原始字节、时间与顺序不改写。
+月份取 Thread 开始时间。`thread.json` 保存可见 Thread 数据；`manifest.json` 记录来源契约、Thread/Session 身份、截止 item 及指纹、完整性、数量和文件哈希。App Server 数据不冒充 JSONL；只有 fallback 额外保留字节不改写的 `raw/session.jsonl`。同一 Thread 重复归档会原子替换整个目录，失败时保留上次成功档案。
 
-- 排除隐藏推理、系统/开发者指令、遥测和内部上下文；`session_meta` 因内嵌基础指令整行排除，仅用于来源校验。
+- App Server 主路径保留可见用户、助手及工作过程 item，排除隐藏推理、hook prompt 和上下文压缩；rollout fallback 中 `session_meta` 只用于身份校验，不写入原始证据。
 - 内嵌图片不重复复制，普通项目文件保留原引用，可识别的必要临时附件复制到 `assets`。
 - 不上传、不分享、不自动脱敏。档案可能包含凭证、私有代码或个人信息，请选择合适的本地位置。
 - 独立配置位于 `%USERPROFILE%\.ai-native-brand\archive-config.json`，升级 Skill 不覆盖配置。
@@ -75,13 +79,15 @@ D:\MyData
 python -B -X utf8 -m unittest discover -s tests -v
 ```
 
-CI 配置为在 Windows 的 Python 3.11 和 3.14 上运行同一套测试。测试使用临时目录及合成记录，不读取个人会话，不需要凭证或归档配置。
+CI 在 Windows 的 Python 3.11/3.14 与 Node.js 22 环境中运行完整测试。测试使用临时目录及合成记录，不读取个人会话，不需要凭证或归档配置。
 
 主要文件：
 
 - `skills/yalo-note-it/SKILL.md`：触发、首次配置和执行说明。
-- `skills/yalo-note-it/scripts/record_session.py`：身份定位、截止点、配置及安全写入。
-- `skills/yalo-note-it/scripts/codex_format.py`：已验证格式的记录筛选。
+- `skills/yalo-note-it/scripts/record_session.py`：命令行协调器。
+- `skills/yalo-note-it/scripts/app_server_client.py` 与 `thread_source.py`：App Server 生命周期、完整分页、身份与可见性校验。
+- `skills/yalo-note-it/scripts/session_source.py` 与 `codex_format.py`：rollout JSONL fallback 的历史恢复和严格分类。
+- `skills/yalo-note-it/scripts/archive_model.py` 与 `archive_store.py`：格式无关的归档包及原子持久化。
 - `skills/yalo-note-it/scripts/session_assets.py`：本地临时附件识别及复制。
 - `tests/test_session_record.py`：行为测试。
 - `browser-extension/yalo-note-it/`：独立的 ChatGPT/DeepSeek 浏览器扩展，可直接加载或打包。

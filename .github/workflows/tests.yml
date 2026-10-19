@@ -15,5 +15,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Run behavior tests
         run: python -B -X utf8 -m unittest discover -s tests -v

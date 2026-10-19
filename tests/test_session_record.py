@@ -6,16 +6,21 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from unittest.mock import Mock
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'skills/yalo-note-it/scripts'
 sys.path.insert(0, str(SCRIPTS))
 import archive_store as store
+from app_server_client import AppServerClient
+import record_session as application
 import runtime_context as runtime
 import session_source as source
-from archive_errors import ArchiveError
+from archive_errors import ArchiveError, UnsupportedAppServerError
+from archive_model import ArchivePackage, ArchiveRecord, THREAD_SCHEMA
 from archive_trigger import is_trigger
 from codex_format import keep_record, reference_source, timestamp, user_text
 from session_assets import plan_assets
+from thread_source import ThreadArchiveSource, item_digest
 
 SID = '11111111-1111-4111-8111-111111111111'
 CHILD_SID = '22222222-2222-4222-8222-222222222222'
@@ -84,6 +89,36 @@ def single_source(path):
     return source.SessionSource((source.SourceSegment(path),))
 
 
+def fallback_package(rows, started, assets=()):
+    cutoff = rows[-1][1]['payload']['id']
+    return ArchivePackage(
+        thread_id=SID,
+        session_id=SID,
+        started_at=started,
+        cutoff_id=cutoff,
+        cutoff_sha256=source.digest(rows[-1][0]),
+        document={
+            'schema': THREAD_SCHEMA,
+            'source': 'rollout-jsonl-fallback',
+            'thread': {'id': SID, 'sessionId': SID},
+            'turns': [],
+        },
+        source='rollout-jsonl-fallback',
+        source_info={'contract': 'codex-rollout-jsonl'},
+        turn_count=0,
+        records=tuple(
+            ArchiveRecord(
+                row['payload'].get('id') or f'ordinal-{index}',
+                row['type'],
+                row,
+            )
+            for index, (_, row) in enumerate(rows)
+        ),
+        assets=tuple(assets),
+        raw_evidence=b''.join(value for value, _ in rows),
+    )
+
+
 def sample():
     return [record('session_meta', {'session_id': SID, 'id': SID, 'base_instructions': {'text': 'private'}}),
             message('injected', 'context', kinds=['agents_md.instructions']),
@@ -141,6 +176,18 @@ class ArchiveTests(unittest.TestCase):
         self.source.write_bytes(b''.join(map(raw, self.rows)))
         with self.assertRaises(ArchiveError):
             source.locate_source(SID, self.home)
+
+    def test_fallback_keeps_thread_and_session_tree_ids_distinct(self):
+        child = self.source.with_name('rollout-' + CHILD_SID + '.jsonl')
+        child.write_bytes(b''.join(map(raw, [
+            record('session_meta', {'session_id': SID, 'id': CHILD_SID}),
+            message('Yalo note it', 'child-trigger'),
+        ])))
+
+        located = source.locate_source(
+            runtime.RuntimeIdentity(CHILD_SID, SID), self.home)
+
+        self.assertEqual(located.segments, (source.SourceSegment(child),))
 
     def test_non_object_source_records_use_archive_error_contract(self):
         for data, error in [
@@ -435,11 +482,19 @@ class ArchiveTests(unittest.TestCase):
             source.locate_source(SID, self.home)
 
     def test_missing_or_conflicting_environment_fails(self):
-        for env in [{}, {'CODEX_SESSION_ID': SID, 'CODEX_THREAD_ID': 'different'}]:
+        for env in [{}, {'CODEX_SESSION_ID': SID}]:
             with patch.dict(os.environ, env, clear=True), self.assertRaises(ArchiveError):
                 runtime.current_id()
-        with patch.dict(os.environ, {'CODEX_SESSION_ID': SID}, clear=True):
+        with patch.dict(os.environ, {'CODEX_THREAD_ID': SID}, clear=True):
             self.assertEqual(runtime.current_id(), SID)
+        with patch.dict(os.environ, {
+                'CODEX_SESSION_ID': CHILD_SID,
+                'CODEX_THREAD_ID': SID,
+        }, clear=True):
+            self.assertEqual(
+                runtime.current_identity(),
+                runtime.RuntimeIdentity(SID, CHILD_SID),
+            )
 
     def test_exact_bytes_order_and_cutoff(self):
         selected, _ = self.prepare()
@@ -886,29 +941,41 @@ class ArchiveTests(unittest.TestCase):
     def test_repeat_archive_is_one_file_and_source_unchanged(self):
         before = self.source.read_bytes()
         selected, started = self.prepare()
-        output = store.commit_archive(self.destination, SID, started, selected, [])
-        store.commit_archive(self.destination, SID, started, selected, [])
-        self.assertEqual(output, self.destination / 'sessions' / 'codex' / '2026-09' / SID / 'session.jsonl')
-        self.assertEqual(output.read_bytes(), b''.join(r for r, _ in selected))
-        self.assertEqual(list(output.parent.iterdir()), [output])
+        package = fallback_package(selected, started)
+        output = store.commit_archive(self.destination, package)
+        store.commit_archive(self.destination, package)
+        target = self.destination / 'sessions' / 'codex' / '2026-09' / SID
+        self.assertEqual(output, target / 'thread.json')
+        self.assertEqual(
+            (target / 'raw/session.jsonl').read_bytes(),
+            b''.join(r for r, _ in selected),
+        )
+        self.assertEqual(
+            {path.name for path in target.iterdir()},
+            {'thread.json', 'manifest.json', 'raw'},
+        )
         self.assertEqual(self.source.read_bytes(), before)
 
     def test_replace_failure_preserves_previous_archive(self):
         selected, started = self.prepare()
-        output = store.commit_archive(self.destination, SID, started, selected, [])
+        package = fallback_package(selected, started)
+        output = store.commit_archive(self.destination, package)
         previous = output.read_bytes()
         with patch.object(store.os, 'replace', side_effect=OSError('denied')):
             with self.assertRaises(OSError):
-                store.commit_archive(self.destination, SID, started, selected[:1], [])
+                store.commit_archive(
+                    self.destination, fallback_package(selected[:1], started))
         self.assertEqual(output.read_bytes(), previous)
-        self.assertEqual(list(output.parent.iterdir()), [output])
+        self.assertTrue((output.parent / 'manifest.json').is_file())
 
     def test_lock_refuses_concurrent_write(self):
         selected, started = self.prepare()
-        output = store.commit_archive(self.destination, SID, started, selected, [])
-        (output.parent / '.archive.lock').write_text('')
+        package = fallback_package(selected, started)
+        output = store.commit_archive(self.destination, package)
+        lock = output.parent.parent / f'.{SID}.archive.lock'
+        lock.write_text('')
         with self.assertRaises(ArchiveError):
-            store.commit_archive(self.destination, SID, started, selected, [])
+            store.commit_archive(self.destination, package)
 
     def test_status_does_not_create_config(self):
         config = self.root / 'settings' / 'archive-config.json'
@@ -935,6 +1002,9 @@ class ArchiveTests(unittest.TestCase):
 
         with patch.object(store, 'config_path', return_value=config):
             self.assertEqual(store.load_config(), legacy)
+            store.write_locator(legacy)
+        locator = json.loads((legacy / store.LOCATOR_NAME).read_text(encoding='utf-8'))
+        self.assertEqual(locator['archive_root'], str(legacy.resolve()))
 
     def test_configuration_can_recover_from_unavailable_old_directory(self):
         config = self.root / 'settings' / 'archive-config.json'
@@ -990,6 +1060,9 @@ class ArchiveTests(unittest.TestCase):
             (nested / 'old.txt').write_text('old', encoding='utf-8')
             second = store.configure(second_base, migrate_existing=True)
             self.assertEqual((second / 'sessions/codex/old.txt').read_text(encoding='utf-8'), 'old')
+            locator = json.loads(
+                (second / store.LOCATOR_NAME).read_text(encoding='utf-8'))
+            self.assertEqual(locator['archive_root'], str(second))
             self.assertFalse(first.exists())
             self.assertEqual(store.load_config(), second)
 
@@ -1035,6 +1108,13 @@ class ArchiveTests(unittest.TestCase):
             root = store.configure(base)
         self.assertEqual(root, base / 'YaloNote')
         self.assertTrue(root.is_dir())
+        locator = json.loads(
+            (root / '.yalo-note-location.json').read_text(encoding='utf-8'))
+        self.assertEqual(locator, {
+            'schemaVersion': 1,
+            'kind': 'yalo-note-archive-root',
+            'archive_root': str(root),
+        })
 
     def test_archive_root_cannot_contain_codex_source_storage(self):
         config = self.root / 'settings' / 'archive-config.json'
@@ -1059,10 +1139,13 @@ class ArchiveTests(unittest.TestCase):
             rows.append((raw(row), row))
         assets = plan_assets(asset_sources(rows), self.home)
         output = store.commit_archive(
-            self.destination, SID, timestamp(STAMP), rows, assets)
+            self.destination, fallback_package(rows, timestamp(STAMP), assets))
         self.assertEqual((output.parent / 'assets/picture.png').read_bytes(), b'\x00')
         self.assertEqual((output.parent / 'assets/picture-asset-1.png').read_bytes(), b'\x01')
-        self.assertEqual(output.read_bytes(), b''.join(r for r, _ in rows))
+        self.assertEqual(
+            (output.parent / 'raw/session.jsonl').read_bytes(),
+            b''.join(r for r, _ in rows),
+        )
 
     def test_function_output_content_blocks_are_scanned_for_assets(self):
         attachment = self.root / 'function-output.png'
@@ -1100,7 +1183,8 @@ class ArchiveTests(unittest.TestCase):
 
     def test_asset_changed_after_planning_preserves_archive(self):
         selected, started = self.prepare()
-        output = store.commit_archive(self.destination, SID, started, selected, [])
+        output = store.commit_archive(
+            self.destination, fallback_package(selected, started))
         before = output.read_bytes()
         p = self.root / 'file.png'
         p.write_bytes(b'one')
@@ -1108,8 +1192,231 @@ class ArchiveTests(unittest.TestCase):
         assets = plan_assets(asset_sources([(raw(row), row)]), self.home)
         p.write_bytes(b'two')
         with self.assertRaises(ArchiveError):
-            store.commit_archive(self.destination, SID, started, selected, assets)
+            store.commit_archive(
+                self.destination, fallback_package(selected, started, assets))
         self.assertEqual(output.read_bytes(), before)
+
+
+class AppServerClientTests(unittest.TestCase):
+    def test_turn_pagination_is_explicit_ascending_and_full(self):
+        client = AppServerClient(page_size=2)
+        client.request = Mock(side_effect=[
+            {'data': [{'id': 'turn-1'}], 'nextCursor': 'page-2'},
+            {'data': [{'id': 'turn-2'}], 'nextCursor': None},
+        ])
+
+        self.assertEqual(
+            [turn['id'] for turn in client.list_turns(SID)],
+            ['turn-1', 'turn-2'],
+        )
+        first = client.request.call_args_list[0].args
+        self.assertEqual(first[0], 'thread/turns/list')
+        self.assertEqual(first[1]['sortDirection'], 'asc')
+        self.assertEqual(first[1]['itemsView'], 'full')
+        self.assertNotIn('cursor', first[1])
+        self.assertEqual(
+            client.request.call_args_list[1].args[1]['cursor'], 'page-2')
+
+    def test_repeated_cursor_is_not_treated_as_complete_history(self):
+        client = AppServerClient()
+        client.request = Mock(side_effect=[
+            {'data': [], 'nextCursor': 'same'},
+            {'data': [], 'nextCursor': 'same'},
+        ])
+        with self.assertRaisesRegex(ArchiveError, 'repeated cursor'):
+            client.list_turns(SID)
+
+    def test_item_hydration_reads_every_page_for_one_turn(self):
+        client = AppServerClient(page_size=1)
+        client.request = Mock(side_effect=[
+            {'data': [{'turnId': 'turn-1', 'item': {'id': 'one'}}],
+             'nextCursor': 'next'},
+            {'data': [{'turnId': 'turn-1', 'item': {'id': 'two'}}],
+             'nextCursor': None},
+        ])
+
+        entries = client.list_items(SID, 'turn-1')
+
+        self.assertEqual([entry['item']['id'] for entry in entries], ['one', 'two'])
+        first = client.request.call_args_list[0].args[1]
+        second = client.request.call_args_list[1].args[1]
+        self.assertEqual(first['sortDirection'], 'asc')
+        self.assertEqual(first['turnId'], 'turn-1')
+        self.assertEqual(second['cursor'], 'next')
+
+    def test_only_explicit_unsupported_rpc_errors_enable_fallback(self):
+        client = AppServerClient()
+        unsupported = client._rpc_failure(
+            'thread/turns/list', {'code': -32601, 'message': 'Method not found'})
+        unavailable = client._rpc_failure(
+            'thread/read', {'code': -32000, 'message': 'thread not loaded'})
+        permission = client._rpc_failure(
+            'initialize', {'code': -32000, 'message': 'permission denied'})
+
+        self.assertIsInstance(unsupported, UnsupportedAppServerError)
+        self.assertIs(type(unavailable), ArchiveError)
+        self.assertIs(type(permission), ArchiveError)
+
+    def test_coordinator_falls_back_only_for_explicit_unsupported(self):
+        marker = {'fallback': True}
+        with (patch.object(
+                application, '_app_server_operation',
+                side_effect=UnsupportedAppServerError('method not found')),
+              patch.object(
+                  application, '_rollout_operation', return_value=marker) as fallback):
+            self.assertIs(
+                application._conversation_operation(object(), object(), object()),
+                marker,
+            )
+            fallback.assert_called_once()
+
+        with (patch.object(
+                application, '_app_server_operation',
+                side_effect=ArchiveError('identity mismatch')),
+              patch.object(application, '_rollout_operation') as fallback,
+              self.assertRaisesRegex(ArchiveError, 'identity mismatch')):
+            application._conversation_operation(object(), object(), object())
+        fallback.assert_not_called()
+
+
+class ThreadSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        self.trigger = {
+            'id': 'user-trigger',
+            'type': 'userMessage',
+            'content': [{'type': 'text', 'text': 'Yalo note it'}],
+        }
+        self.thread = {
+            'id': SID,
+            'sessionId': SID,
+            'parentThreadId': CHILD_SID,
+            'forkedFromId': CHILD_SID,
+            'createdAt': 1789012345,
+            'cliVersion': '0.145.0',
+            'turns': [],
+        }
+        self.turns = [
+            {
+                'id': 'turn-1',
+                'status': 'completed',
+                'startedAt': 1,
+                'itemsView': 'full',
+                'items': [
+                    {
+                        'id': 'user-first',
+                        'type': 'userMessage',
+                        'content': [{'type': 'text', 'text': 'hello'}],
+                    },
+                    {'id': 'hidden', 'type': 'reasoning', 'summary': [], 'content': []},
+                    {'id': 'answer', 'type': 'agentMessage', 'text': 'done'},
+                ],
+            },
+            {
+                'id': 'turn-2',
+                'status': 'inProgress',
+                'startedAt': 2,
+                'itemsView': 'full',
+                'items': [self.trigger, {
+                    'id': 'after-cutoff',
+                    'type': 'agentMessage',
+                    'text': 'archive execution',
+                }],
+            },
+        ]
+        self.client = Mock()
+        self.client.server_info = {'userAgent': 'Codex/0.145.0'}
+        self.client.read_thread.return_value = self.thread
+        self.client.list_turns.return_value = self.turns
+        self.source = ThreadArchiveSource(
+            self.client,
+            runtime.RuntimeIdentity(SID, CHILD_SID),
+            self.home,
+            retry_attempts=2,
+            retry_delay=0,
+        )
+
+    def test_probe_and_prepare_use_stable_item_cutoff(self):
+        result = self.source.probe('user-trigger')
+        expected = item_digest('turn-2', self.trigger)
+
+        self.assertEqual(result['message_id'], 'user-trigger')
+        self.assertEqual(result['sha256'], expected)
+        self.assertTrue(result['is_trigger'])
+
+        package = self.source.prepare('user-trigger', expected)
+        self.assertEqual(package.thread_id, SID)
+        self.assertEqual(package.session_id, SID)
+        self.assertEqual(package.source, 'codex-app-server')
+        self.assertIsNone(package.raw_evidence)
+        self.assertEqual(package.document['turns'][-1]['items'], [self.trigger])
+        self.assertEqual(
+            [item['type'] for turn in package.document['turns']
+             for item in turn['items']],
+            ['userMessage', 'agentMessage', 'userMessage'],
+        )
+
+    def test_probe_without_id_requires_a_stable_latest_user_item(self):
+        result = self.source.probe()
+
+        self.assertEqual(result['message_id'], 'user-trigger')
+        self.assertEqual(self.client.list_turns.call_count, 2)
+        self.assertEqual(result['timestamp'], '1970-01-01T00:00:02Z')
+
+    def test_summary_turn_is_hydrated_through_items_api(self):
+        self.turns[0]['itemsView'] = 'summary'
+        self.turns[0]['items'] = []
+        entries = [
+            {'turnId': 'turn-1', 'item': {
+                'id': 'user-first',
+                'type': 'userMessage',
+                'content': [{'type': 'text', 'text': 'hello'}],
+            }},
+        ]
+        self.client.list_items.return_value = entries
+
+        self.source.probe('user-trigger')
+
+        self.client.list_items.assert_called_once_with(SID, 'turn-1')
+
+    def test_unknown_item_type_fails_closed(self):
+        self.turns[0]['items'].insert(1, {'id': 'future', 'type': 'futureVisible'})
+        with self.assertRaisesRegex(ArchiveError, 'Unknown App Server thread item'):
+            self.source.probe('user-trigger')
+
+    def test_missing_cutoff_retries_then_fails_without_truncating(self):
+        with self.assertRaisesRegex(ArchiveError, 'not yet visible'):
+            self.source.probe('absent')
+        self.assertEqual(self.client.list_turns.call_count, 2)
+
+    def test_identity_mismatch_does_not_fallback_or_guess(self):
+        self.thread['parentThreadId'] = GRANDCHILD_SID
+        self.thread['forkedFromId'] = GRANDCHILD_SID
+        with self.assertRaisesRegex(ArchiveError, 'unrelated'):
+            self.source.probe('user-trigger')
+
+    def test_api_archive_has_manifest_hashes_and_no_fake_jsonl(self):
+        package = self.source.prepare(
+            'user-trigger', item_digest('turn-2', self.trigger))
+        archive_root = self.home / 'YaloNote'
+        archive_root.mkdir()
+
+        output = store.commit_archive(archive_root, package)
+        target = output.parent
+        manifest = json.loads((target / 'manifest.json').read_text('utf-8'))
+
+        self.assertEqual(target.name, SID)
+        self.assertFalse((target / 'session.jsonl').exists())
+        self.assertFalse((target / 'raw/session.jsonl').exists())
+        self.assertEqual(manifest['history']['itemsView'], 'full')
+        self.assertTrue(manifest['history']['complete'])
+        self.assertIn('thread.json', manifest['files'])
+        self.assertEqual(
+            manifest['files']['thread.json']['sha256'],
+            hashlib.sha256((target / 'thread.json').read_bytes()).hexdigest(),
+        )
 
 
 if __name__ == '__main__':
