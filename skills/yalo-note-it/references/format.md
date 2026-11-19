@@ -19,10 +19,10 @@ not support the required methods.
   its runtime session tree and need not equal either `thread.id` or
   `thread.sessionId`; the API identity and declared parent/fork relationship are
   validated without conflating these fields.
-- Visible records are `userMessage`, `agentMessage`, `plan`, command/file/tool,
-  collaboration, web/image and review-mode work items. `reasoning`, `hookPrompt`
-  and `contextCompaction` are validated as internal and excluded. Every unknown
-  item or user-content type fails closed.
+- App Server items require only a JSON object envelope with non-empty `id` and
+  `type`. New official item and user-content types are preserved verbatim without
+  adapter registration. `reasoning`, `hookPrompt` and `contextCompaction` are the
+  explicit internal denylist and remain excluded from the user archive.
 - The cutoff fingerprint is SHA-256 over canonical JSON containing both `turnId`
   and the complete user item. A requested cutoff that is not visible after a
   bounded retry fails; it never falls back to an earlier user item.
@@ -76,11 +76,13 @@ Other formats fail explicitly pending verification. No silent compatibility fall
 - `archive_trigger.py` owns the explicit archive-authorization phrase matcher.
 - `record_session.py` is only the command-line application coordinator. `archive_errors.py` defines the shared user-reportable error contract.
 
-To support a new observed format, capture its exact structural evidence, classify it as preserved or internal, change only the owning adapter, add positive and fail-closed boundary tests, update the matrix, and run both the full suite and a real read-only `check`. Do not add a broad ignore rule or a Session-specific condition.
+New App Server item types require no compatibility entry: preserve them unless the product explicitly classifies them as internal. Add a narrow extractor only when a new structure contains local attachment references that need durable copying. For rollout fallback changes, capture exact structural evidence, classify the record, change only that adapter, add positive and fail-closed boundary tests, update the matrix, and run both the full suite and a real read-only `check`. Do not add a broad ignore rule or a Session-specific condition.
 
 ## Attachments
 
 Scan retained visible messages and tool outputs, not tool input code, for explicit absolute local references: Markdown links, typed image blocks, and whole path strings (including JSON values). Paths merely mentioned inside source code, tracebacks and diagnostic prose are not attachment declarations. Recognize OS temp environment directories plus Codex `tmp`, `clipboard`, `generated_images`, and `visualizations`. Preserve ordinary directory references; do not recursively copy directories. Non-embedded image references that are not absolute local files fail because their durability is not established.
+
+On Windows, URL-style drive references such as `/C:/folder/image.png` are resolved as absolute local drive paths, with or without a `file://` scheme. This normalization applies only to attachment lookup; source records remain unchanged.
 
 Original records are never edited. An asset can be found from its original basename; a differing-content basename collision uses `stem-record_id.ext`. If that also collides, fail. Identical content at a name reuses the existing copy. Changed/missing source assets fail before replacing the archive. Each replacement is built in a sibling staging directory and activated only after its files and manifest are complete. A process kill can leave an explicit lock, staging directory or backup directory, which requires inspection before retrying.
 

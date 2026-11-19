@@ -19,26 +19,6 @@ from session_assets import plan_assets
 
 
 INTERNAL_ITEM_TYPES = {'hookPrompt', 'reasoning', 'contextCompaction'}
-VISIBLE_ITEM_TYPES = {
-    'userMessage',
-    'agentMessage',
-    'plan',
-    'commandExecution',
-    'fileChange',
-    'mcpToolCall',
-    'dynamicToolCall',
-    'collabAgentToolCall',
-    'subAgentActivity',
-    'webSearch',
-    'imageView',
-    'sleep',
-    'imageGeneration',
-    'enteredReviewMode',
-    'exitedReviewMode',
-}
-USER_CONTENT_TYPES = {
-    'text', 'image', 'localImage', 'audio', 'localAudio', 'skill', 'mention'
-}
 
 
 def canonical_bytes(value):
@@ -65,22 +45,21 @@ def _user_content(item):
     if not isinstance(content, list):
         raise ArchiveError('Invalid App Server userMessage content')
     for block in content:
-        if not isinstance(block, dict) or block.get('type') not in USER_CONTENT_TYPES:
-            raise ArchiveError('Unknown App Server userMessage content type')
-        kind = block['type']
-        field = 'text' if kind == 'text' else 'url' if kind in {'image', 'audio'} else 'path'
-        if kind in {'skill', 'mention'}:
-            field = 'path'
-        _required_string(block.get(field), f'userMessage {kind} value')
-        if kind in {'skill', 'mention'}:
-            _required_string(block.get('name'), f'userMessage {kind} name')
+        if not isinstance(block, dict):
+            raise ArchiveError('Invalid App Server userMessage content block')
+        _required_string(block.get('type'), 'App Server userMessage content type')
     return content
 
 
 def user_text(item):
     if item.get('type') != 'userMessage':
         return None
-    texts = [block['text'] for block in _user_content(item) if block['type'] == 'text']
+    texts = [
+        block['text'] for block in _user_content(item)
+        if block['type'] == 'text'
+        and isinstance(block.get('text'), str)
+        and block['text']
+    ]
     return '\n'.join(texts) if texts else None
 
 
@@ -88,14 +67,10 @@ def visible_item(item):
     if not isinstance(item, dict):
         raise ArchiveError('Invalid App Server thread item')
     _required_string(item.get('id'), 'App Server thread item ID')
-    kind = item.get('type')
+    kind = _required_string(item.get('type'), 'App Server thread item type')
     if kind == 'userMessage':
         _user_content(item)
-    if kind in INTERNAL_ITEM_TYPES:
-        return False
-    if kind not in VISIBLE_ITEM_TYPES:
-        raise ArchiveError(f'Unknown App Server thread item type: {kind!r}')
-    return True
+    return kind not in INTERNAL_ITEM_TYPES
 
 
 def reference_source(item):
@@ -106,12 +81,14 @@ def reference_source(item):
     if kind == 'userMessage':
         for block in _user_content(item):
             block_type = block['type']
-            if block_type == 'text':
+            if block_type == 'text' and isinstance(block.get('text'), str):
                 content.append(ReferenceContent(block['text']))
-            elif block_type in {'image', 'localImage'}:
+            elif (block_type in {'image', 'localImage'}
+                  and isinstance(block.get('url', block.get('path')), str)):
                 content.append(ReferenceContent(
                     block.get('url', block.get('path')), 'image'))
-            elif block_type in {'audio', 'localAudio'}:
+            elif (block_type in {'audio', 'localAudio'}
+                  and isinstance(block.get('url', block.get('path')), str)):
                 content.append(ReferenceContent(
                     block.get('url', block.get('path')), 'audio'))
     elif kind in {'agentMessage', 'plan'} and isinstance(item.get('text'), str):
@@ -124,7 +101,7 @@ def reference_source(item):
     elif kind == 'dynamicToolCall' and isinstance(item.get('contentItems'), list):
         for block in item['contentItems']:
             if not isinstance(block, dict):
-                raise ArchiveError('Invalid dynamicToolCall content item')
+                continue
             block_type = block.get('type')
             if block_type == 'inputText' and isinstance(block.get('text'), str):
                 content.append(ReferenceContent(block['text']))
@@ -132,16 +109,37 @@ def reference_source(item):
                 content.append(ReferenceContent(block['imageUrl'], 'image'))
             elif block_type == 'inputAudio' and isinstance(block.get('audioUrl'), str):
                 content.append(ReferenceContent(block['audioUrl'], 'audio'))
-            else:
-                raise ArchiveError('Unknown dynamicToolCall content item type')
-    elif kind == 'imageView':
-        content.append(ReferenceContent(
-            _required_string(item.get('path'), 'imageView path'), 'image'))
-    elif kind == 'imageGeneration' and item.get('savedPath') is not None:
-        content.append(ReferenceContent(
-            _required_string(item.get('savedPath'), 'imageGeneration savedPath'),
-            'image',
-        ))
+    elif kind == 'functionCallOutput':
+        output = item.get('output')
+        if isinstance(output, str):
+            content.append(ReferenceContent(output))
+        elif isinstance(output, list):
+            for block in output:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get('type')
+                if block_type in {'input_text', 'inputText'} and isinstance(
+                        block.get('text'), str):
+                    content.append(ReferenceContent(block['text']))
+                elif block_type in {'input_image', 'inputImage'} and isinstance(
+                        block.get('image_url', block.get('imageUrl')), str):
+                    content.append(ReferenceContent(
+                        block.get('image_url', block.get('imageUrl')), 'image'))
+                elif block_type in {'input_audio', 'inputAudio'} and isinstance(
+                        block.get('audio_url', block.get('audioUrl')), str):
+                    content.append(ReferenceContent(
+                        block.get('audio_url', block.get('audioUrl')), 'audio'))
+                elif block_type in {'input_file', 'inputFile'} and isinstance(
+                        block.get('file_url', block.get('fileUrl')), str):
+                    content.append(ReferenceContent(
+                        block.get('file_url', block.get('fileUrl'))))
+        elif isinstance(output, dict):
+            content.append(ReferenceContent(json.dumps(
+                output, ensure_ascii=False, separators=(',', ':'))))
+    elif kind == 'imageView' and isinstance(item.get('path'), str):
+        content.append(ReferenceContent(item['path'], 'image'))
+    elif kind == 'imageGeneration' and isinstance(item.get('savedPath'), str):
+        content.append(ReferenceContent(item['savedPath'], 'image'))
     return ReferenceSource(record_id, tuple(content)) if content else None
 
 

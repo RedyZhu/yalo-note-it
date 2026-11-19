@@ -1129,6 +1129,26 @@ class ArchiveTests(unittest.TestCase):
 
         self.assertFalse(archive_root.exists())
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows drive path normalization')
+    def test_url_style_windows_image_path_is_copied_without_rewriting_record(self):
+        attachment = self.root / 'drive-image.png'
+        attachment.write_bytes(b'image')
+        url = '/' + attachment.as_posix()
+        row = message('image', 'drive-image')
+        row['payload']['content'].append({'type': 'input_image', 'image_url': url})
+        original = raw(row)
+        assets = plan_assets(asset_sources([(original, row)]), self.home)
+        self.assertEqual([asset.source for asset in assets], [attachment.resolve()])
+        output = store.commit_archive(
+            self.destination, fallback_package([(original, row)], timestamp(STAMP), assets))
+        self.assertEqual((output.parent / 'assets/drive-image.png').read_bytes(), b'image')
+        self.assertEqual((output.parent / 'raw/session.jsonl').read_bytes(), original)
+        missing = message('missing')
+        missing['payload']['content'].append({
+            'type': 'input_image', 'image_url': '/' + (self.root / 'missing.png').as_posix()})
+        with self.assertRaisesRegex(ArchiveError, 'Necessary temporary attachment missing'):
+            plan_assets(asset_sources([(raw(missing), missing)]), self.home)
+
     def test_temporary_attachment_and_name_collision(self):
         paths = [self.root / 'one' / 'picture.png', self.root / 'two' / 'picture.png']
         rows = []
@@ -1311,6 +1331,8 @@ class ThreadSourceTests(unittest.TestCase):
                         'content': [{'type': 'text', 'text': 'hello'}],
                     },
                     {'id': 'hidden', 'type': 'reasoning', 'summary': [], 'content': []},
+                    {'id': 'hook', 'type': 'hookPrompt', 'text': 'internal'},
+                    {'id': 'compaction', 'type': 'contextCompaction', 'text': 'internal'},
                     {'id': 'answer', 'type': 'agentMessage', 'text': 'done'},
                 ],
             },
@@ -1381,10 +1403,91 @@ class ThreadSourceTests(unittest.TestCase):
 
         self.client.list_items.assert_called_once_with(SID, 'turn-1')
 
-    def test_unknown_item_type_fails_closed(self):
-        self.turns[0]['items'].insert(1, {'id': 'future', 'type': 'futureVisible'})
-        with self.assertRaisesRegex(ArchiveError, 'Unknown App Server thread item'):
+    def test_new_official_item_type_is_preserved_without_adapter_update(self):
+        future = {
+            'id': 'future',
+            'type': 'futureVisible',
+            'opaquePayload': {'version': 1, 'values': ['kept']},
+        }
+        self.turns[0]['items'].insert(1, future)
+
+        package = self.source.prepare(
+            'user-trigger', item_digest('turn-2', self.trigger))
+
+        archived = package.document['turns'][0]['items'][1]
+        self.assertEqual(archived, future)
+        self.assertIsNot(archived, future)
+
+    def test_new_user_content_type_is_preserved_without_adapter_update(self):
+        future = {'type': 'futureContent', 'payload': {'value': 'kept'}}
+        self.turns[0]['items'][0]['content'].append(future)
+
+        package = self.source.prepare(
+            'user-trigger', item_digest('turn-2', self.trigger))
+
+        self.assertEqual(
+            package.document['turns'][0]['items'][0]['content'][-1], future)
+
+    def test_user_content_block_still_requires_a_type_envelope(self):
+        self.turns[0]['items'][0]['content'].append({'payload': {'value': 'invalid'}})
+
+        with self.assertRaisesRegex(ArchiveError, 'content type'):
             self.source.probe('user-trigger')
+
+    def test_app_server_item_envelope_still_requires_id_and_type(self):
+        invalid_items = [
+            ({'type': 'futureVisible'}, 'item ID'),
+            ({'id': 'future', 'type': ''}, 'item type'),
+        ]
+        for item, message in invalid_items:
+            with self.subTest(item=item):
+                self.turns[0]['items'].insert(1, item)
+                try:
+                    with self.assertRaisesRegex(ArchiveError, message):
+                        self.source.probe('user-trigger')
+                finally:
+                    self.turns[0]['items'].pop(1)
+
+    def test_function_call_output_is_preserved_and_scanned_for_assets(self):
+        attachment = self.home / 'tmp' / 'function-output.png'
+        attachment.parent.mkdir()
+        attachment.write_bytes(b'image')
+        output = {
+            'id': 'function-output',
+            'type': 'functionCallOutput',
+            'name': 'send_message_to_thread',
+            'namespace': 'codex_app',
+            'output': str(attachment),
+        }
+        self.turns[0]['items'].insert(1, output)
+
+        package = self.source.prepare(
+            'user-trigger', item_digest('turn-2', self.trigger))
+
+        self.assertEqual(package.document['turns'][0]['items'][1], output)
+        self.assertEqual([asset.source for asset in package.assets], [attachment.resolve()])
+
+    def test_function_call_output_structured_media_is_scanned_for_assets(self):
+        attachment = self.home / 'tmp' / 'structured-output.png'
+        attachment.parent.mkdir()
+        attachment.write_bytes(b'image')
+        output = {
+            'id': 'structured-function-output',
+            'type': 'functionCallOutput',
+            'name': 'render',
+            'namespace': 'example',
+            'output': [
+                {'type': 'input_image', 'image_url': str(attachment)},
+                {'type': 'futureContent', 'payload': {'value': 'kept'}},
+            ],
+        }
+        self.turns[0]['items'].insert(1, output)
+
+        package = self.source.prepare(
+            'user-trigger', item_digest('turn-2', self.trigger))
+
+        self.assertEqual(package.document['turns'][0]['items'][1], output)
+        self.assertEqual([asset.source for asset in package.assets], [attachment.resolve()])
 
     def test_missing_cutoff_retries_then_fails_without_truncating(self):
         with self.assertRaisesRegex(ArchiveError, 'not yet visible'):

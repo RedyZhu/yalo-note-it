@@ -31,7 +31,7 @@ description: 'Yalo note it：在 Codex 中用“Yalo note it”或兼容中文�
 
 脚本从 `CODEX_THREAD_ID` 取得当前 Thread，从可选的 `CODEX_SESSION_ID` 取得运行时会话树身份；两者不是同一概念，禁止假设相等。`thread/read` 必须返回同一 Thread，并验证返回的 `sessionId` 或父级关系与运行时身份相容。历史必须通过 `thread/turns/list` 显式使用 `sortDirection=asc`、`itemsView=full` 并读完全部分页；不得把 `thread/read(includeTurns=true)` 当成完整历史。若某一 Turn 未返回 full items，再使用 `thread/items/list` 完整分页补齐。
 
-App Server 初始化可能需要访问 Codex Home 的本地状态库；文件系统权限受限时按宿主权限流程申请。权限失败、身份不一致、分页重复、内容冲突或未知记录类型都必须显式停止，不能伪装成旧版不支持而降级。只有 App Server 命令缺失或 JSON-RPC 明确返回“不支持该方法”时，才进入 rollout JSONL fallback。fallback 的多个候选文件只能按已验证的历史边界唯一重建，禁止按修改时间、文件大小或名称猜测。指定消息不可见时做有限短重试；仍不可见就明确报告，不能缩短截止点。诊断格式失败或维护适配器时，读取 [已验证的格式、历史恢复规则与维护边界](references/format.md)。
+App Server 初始化可能需要访问 Codex Home 的本地状态库；文件系统权限受限时按宿主权限流程申请。权限失败、身份不一致、分页重复、内容冲突或 item 基础 envelope（对象、非空 `id` / `type`）损坏都必须显式停止，不能伪装成旧版不支持而降级。官方 API 返回的新 item 或 user-content 类型默认原样保留，不要求先加入类型白名单。只有 App Server 命令缺失或 JSON-RPC 明确返回“不支持该方法”时，才进入 rollout JSONL fallback。fallback 的多个候选文件只能按已验证的历史边界唯一重建，禁止按修改时间、文件大小或名称猜测。指定消息不可见时做有限短重试；仍不可见就明确报告，不能缩短截止点。诊断格式失败或维护适配器时，读取 [已验证的格式、历史恢复规则与维护边界](references/format.md)。
 
 归档请求之后的执行回合不进入本次档案。首次配置时保留原始 `message_id` / `sha256`，后续路径确认不是新的截止点。上下文丢失导致无法确认原请求时停止并说明原因。
 
@@ -61,10 +61,10 @@ Yalo note it 尚未配置。
 
 用户提供 `<base-path>` 后，新配置的实际 `<archive-root>` 固定为 `<base-path>/YaloNote`，并原子写入根定位文件 `.yalo-note-location.json`。Codex 输出为 `<archive-root>/sessions/codex/<YYYY-MM>/<thread-id>/`；年月取 Thread 开始时间，不重新生成时间。目录至少包含 `manifest.json` 与 `thread.json`，临时附件位于 `assets/`。只有 rollout fallback 会额外保存字节保持的 `raw/session.jsonl`；App Server 数据绝不伪装成 JSONL。不存在默认路径。已有配置继续使用其记录的绝对路径。重复调用原子替换同一 Thread 档案；失败不得冒充成功。
 
-主适配器保存 App Server 提供的可见 `userMessage`、`agentMessage` 与工作过程项目，排除 `reasoning`、`hookPrompt` 和 `contextCompaction`。未知可见性或未知 item 类型显式失败，不语义猜测。manifest 记录 Thread/Session 身份、CLI/API 信息、截止 item 与指纹、`itemsView=full`、完整性、数量和文件哈希。
+主适配器信任并原样保存 App Server 提供的官方 Thread item，不维护可见 item 或 user-content 类型白名单；仅排除产品明确不归档的 `reasoning`、`hookPrompt` 和 `contextCompaction`。已知文本、图片、音频和工具输出结构用于截止点与临时附件发现，但未知结构不会阻断或被丢弃。manifest 记录 Thread/Session 身份、CLI/API 信息、截止 item 与指纹、`itemsView=full`、完整性、数量和文件哈希。
 
 rollout fallback 适配已实测的 Codex 桌面 JSONL 结构。`session_meta` 只用于身份校验，因其内嵌基础指令，整行不保存。所有 fallback 保留行的字节、字段、顺序、时间原样保留。内部 `user` 消息按 provenance 排除；未知或混合来源、未知可见性、未知记录类型均显式失败。
 
 Codex 端不重复复制内嵌图片；普通项目文件保留原引用；可识别的本地临时附件复制到 `assets`，保留原名，内容冲突时追加来源记录 ID。Codex 端不生成 Markdown、摘要或索引。读取档案时可用原引用的文件名查找 `assets`；冲突时结合来源记录 ID。缺失临时附件时报错，保留原来源及上次档案，不声称完成。
 
-不要把未知事件简单加入忽略列表以求成功。
+App Server 的新官方 item 类型原样保存；不要为了成功把它加入忽略列表。rollout fallback 的未知事件仍必须显式失败。

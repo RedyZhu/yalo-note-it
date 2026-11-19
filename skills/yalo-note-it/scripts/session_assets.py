@@ -29,6 +29,9 @@ def local_path(value):
         value = unquote(parsed.path)
         if re.match(r'^/[A-Za-z]:/', value):
             value = value[1:]
+    # Desktop image references may use URL-style Windows drive paths without a scheme.
+    if os.name == 'nt' and re.match(r'^/[A-Za-z]:/', value):
+        value = value[1:]
     # Markdown file links may carry a line number.
     value = re.sub(r':\d+$', '', value)
     path = Path(value)
